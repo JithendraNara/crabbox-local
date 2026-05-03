@@ -71,15 +71,15 @@ crabbox --version
 ```yaml
 provider: static-ssh
 static:
-  host: 192.168.1.100          # or your-box.local, tailscale hostname
+  host: 192.168.0.193          # or your-box.local, tailscale hostname
 ssh:
-  user: myuser
+  user: jithendra
   key: ~/.ssh/id_ed25519
   port: "22"
-workRoot: /home/myuser/crabbox
+workRoot: /home/jithendra/crabbox
 ```
 
-Or use env vars: `CRABBOX_PROVIDER=static-ssh CRABBOX_STATIC_SSH_HOST=192.168.1.100`
+Or use env vars: `CRABBOX_PROVIDER=static-ssh CRABBOX_STATIC_SSH_HOST=192.168.0.193`
 
 ### 4. Run
 
@@ -97,17 +97,6 @@ crabbox stop blue-prawn
 ```
 
 Every lease gets a `cbx_...` ID and a crustacean slug (`blue-prawn`, `swift-lobster`, ...).
-
-No `crabbox login` needed — that's only for the cloud broker. With `static-ssh`, all commands work directly over SSH:
-
-```bash
-crabbox doctor      # checks SSH + tools
-crabbox warmup      # leases your box
-crabbox run         # syncs + runs
-crabbox ssh --id    # prints SSH command
-crabbox status --id # checks lease state
-crabbox stop        # releases the claim
-```
 
 ---
 
