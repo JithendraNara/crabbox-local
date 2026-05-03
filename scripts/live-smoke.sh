@@ -9,71 +9,10 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cb="${CRABBOX_BIN:-$root/bin/crabbox}"
 repo="${CRABBOX_LIVE_REPO:-$PWD}"
-providers=",${CRABBOX_LIVE_PROVIDERS-aws,hetzner},"
-config_paths=()
+providers=",${CRABBOX_LIVE_PROVIDERS-aws,hetzner,static-ssh,blacksmith-testbox},"
 
 run_in_repo() {
   (cd "$repo" && "$@")
-}
-
-add_config_path() {
-  local path="$1"
-  [[ -n "$path" ]] || return 0
-  if [[ "$path" != /* ]]; then
-    path="$repo/$path"
-  fi
-  config_paths+=("$path")
-}
-
-if [[ -n "${CRABBOX_CONFIG:-}" ]]; then
-  add_config_path "$CRABBOX_CONFIG"
-else
-  add_config_path "$(run_in_repo "$cb" config path 2>/dev/null || true)"
-  add_config_path "$repo/crabbox.yaml"
-  add_config_path "$repo/.crabbox.yaml"
-fi
-
-need_tool() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "missing required tool: $1" >&2
-    exit 2
-  fi
-}
-
-config_value() {
-  local key_path="$1"
-  command -v ruby >/dev/null 2>&1 || return 1
-  local value=""
-  local found=0
-  local path
-  for path in "${config_paths[@]}"; do
-    [[ -r "$path" ]] || continue
-    if value="$(ruby -ryaml -e '
-      value = ARGV[1].split(".").reduce(YAML.load_file(ARGV[0])) do |memo, key|
-        memo.is_a?(Hash) ? memo[key] : nil
-      end
-      exit 3 if value.nil? || value.to_s.empty?
-      print value
-    ' "$path" "$key_path" 2>/dev/null)"; then
-      found=1
-    fi
-  done
-  if [[ "$found" == "1" ]]; then
-    printf '%s' "$value"
-    return 0
-  fi
-  return 1
-}
-
-capture_run() {
-  local __name="$1"
-  shift
-  local __out
-  if ! __out="$("$@" 2>&1)"; then
-    printf '%s\n' "$__out"
-    return 1
-  fi
-  printf -v "$__name" '%s' "$__out"
 }
 
 has_provider() {
@@ -81,11 +20,11 @@ has_provider() {
 }
 
 extract_lease() {
-  rg -o '(cbx_[a-f0-9]{12}|sem_[A-Za-z0-9][A-Za-z0-9._-]*)' | head -1
+  rg -o 'cbx_[a-f0-9]{12}' | head -1
 }
 
 extract_slug() {
-  sed -n 's/.*slug=\([^ ]*\).*/\1/p' | rg -v '^-$' | tail -1
+  sed -n 's/.*slug=\([^ ]*\).*/\1/p' | rg -v '^-$' | head -1
 }
 
 stop_lease() {
@@ -98,45 +37,7 @@ stop_lease() {
   fi
 }
 
-stop_provider_lease() {
-  local provider="$1"
-  local id="$2"
-  local slug="${3:-}"
-  if [[ -n "$slug" ]]; then
-    run_in_repo "$cb" stop --provider "$provider" "$slug" || run_in_repo "$cb" stop --provider "$provider" "$id" || true
-  else
-    run_in_repo "$cb" stop --provider "$provider" "$id" || true
-  fi
-}
-
-blacksmith_workflow_path_like() {
-  local workflow="$1"
-  [[ "$workflow" == .github/* || "$workflow" == */* || "$workflow" == *.yml || "$workflow" == *.yaml ]]
-}
-
-validate_blacksmith_workflow() {
-  local workflow="$1"
-  if ! blacksmith_workflow_path_like "$workflow"; then
-    return 0
-  fi
-
-  local path="$repo/$workflow"
-  if [[ ! -f "$path" ]]; then
-    echo "blacksmith-testbox smoke requires a Testbox workflow; missing $workflow" >&2
-    echo "set CRABBOX_BLACKSMITH_WORKFLOW to a workflow containing useblacksmith/testbox, or use CRABBOX_LIVE_PROVIDERS=aws as a fallback" >&2
-    return 2
-  fi
-  if ! rg -q 'useblacksmith/(testbox|begin-testbox|run-testbox)' "$path"; then
-    echo "blacksmith-testbox smoke requires $workflow to contain a useblacksmith/testbox, useblacksmith/begin-testbox, or useblacksmith/run-testbox step" >&2
-    echo "set CRABBOX_BLACKSMITH_WORKFLOW to a configured Testbox workflow, or use CRABBOX_LIVE_PROVIDERS=aws as a fallback" >&2
-    return 2
-  fi
-}
-
 provider_smoke() {
-  need_tool jq
-  need_tool rg
-
   local provider="$1"
   shift
   local lease=""
@@ -149,7 +50,7 @@ provider_smoke() {
   trap cleanup RETURN
 
   local out
-  capture_run out run_in_repo "$cb" warmup --provider "$provider" "$@"
+  out="$(run_in_repo "$cb" warmup --provider "$provider" "$@" 2>&1)"
   printf '%s\n' "$out"
   lease="$(printf '%s\n' "$out" | extract_lease)"
   slug="$(printf '%s\n' "$out" | extract_slug)"
@@ -162,8 +63,7 @@ provider_smoke() {
   run_in_repo "$cb" cache stats --id "$slug" --json | jq 'if type=="array" then {items:length,kinds:[.[].kind]} else {keys:keys} end'
 
   local runout
-  # shellcheck disable=SC2016 # expanded by the remote shell.
-  capture_run runout run_in_repo "$cb" run --id "$slug" --shell -- 'test -f package.json && printf crabbox-live-ok && printf " pwd=%s\n" "$PWD"'
+  runout="$(run_in_repo "$cb" run --id "$slug" --shell -- 'test -f package.json && printf crabbox-live-ok && printf " pwd=%s\n" "$PWD"' 2>&1)"
   printf '%s\n' "$runout"
   local runid
   runid="$(printf '%s\n' "$runout" | rg -o 'run_[a-f0-9]{12}' | tail -1 || true)"
@@ -176,236 +76,20 @@ provider_smoke() {
 }
 
 blacksmith_smoke() {
-  need_tool jq
-  need_tool rg
-
-  local workflow="${CRABBOX_BLACKSMITH_WORKFLOW:-$(config_value blacksmith.workflow || config_value actions.workflow || true)}"
-  workflow="${workflow:-.github/workflows/ci-check-testbox.yml}"
-  local job="${CRABBOX_BLACKSMITH_JOB:-$(config_value blacksmith.job || config_value actions.job || true)}"
-  job="${job:-check}"
-  local ref="${CRABBOX_BLACKSMITH_REF:-$(config_value blacksmith.ref || config_value actions.ref || true)}"
-  ref="${ref:-main}"
-  validate_blacksmith_workflow "$workflow"
-
   run_in_repo "$cb" list --provider blacksmith-testbox --json | jq '.[0] // empty'
   run_in_repo "$cb" run \
     --provider blacksmith-testbox \
     --blacksmith-org "${CRABBOX_BLACKSMITH_ORG:-openclaw}" \
-    --blacksmith-workflow "$workflow" \
-    --blacksmith-job "$job" \
-    --blacksmith-ref "$ref" \
+    --blacksmith-workflow "${CRABBOX_BLACKSMITH_WORKFLOW:-.github/workflows/ci-check-testbox.yml}" \
+    --blacksmith-job "${CRABBOX_BLACKSMITH_JOB:-check}" \
+    --blacksmith-ref "${CRABBOX_BLACKSMITH_REF:-main}" \
     --idle-timeout "${CRABBOX_BLACKSMITH_IDLE_TIMEOUT:-10m}" \
     --shell -- 'echo blacksmith-crabbox-ok && pwd'
 }
 
-e2b_smoke() {
-  need_tool jq
-  need_tool rg
-
-  local lease=""
-  local slug=""
-  cleanup() {
-    if [[ -n "$lease" ]]; then
-      stop_provider_lease e2b "$lease" "$slug"
-    fi
-  }
-  trap cleanup RETURN
-
-  local out
-  capture_run out run_in_repo "$cb" warmup --provider e2b --e2b-template "${CRABBOX_E2B_TEMPLATE:-base}" --timing-json
-  printf '%s\n' "$out"
-  lease="$(printf '%s\n' "$out" | extract_lease)"
-  slug="$(printf '%s\n' "$out" | extract_slug)"
-  test -n "$lease"
-  test -n "$slug"
-
-  run_in_repo "$cb" status --provider e2b --id "$slug" --wait
-  run_in_repo "$cb" run --provider e2b --id "$slug" --no-sync -- echo crabbox-e2b-ok
-  run_in_repo "$cb" list --provider e2b --json | jq 'map({id:(.id // .CloudID),slug:(.slug // .labels.slug),provider:(.provider // .Provider // .labels.provider),state:(.state // .labels.state // .status)})'
-  stop_provider_lease e2b "$lease" "$slug"
-  lease=""
-}
-
-modal_smoke() {
-  need_tool jq
-  need_tool rg
-
-  local python_bin="${CRABBOX_MODAL_PYTHON:-$(config_value modal.python || true)}"
-  python_bin="${python_bin:-python3}"
-  if ! run_in_repo "$python_bin" -c 'import modal' >/dev/null 2>&1; then
-    echo "modal smoke requires the Modal Python client for $python_bin; install modal and authenticate with python3 -m modal setup or Modal token env vars" >&2
-    return 2
-  fi
-
-  local lease=""
-  local slug=""
-  cleanup() {
-    if [[ -n "$lease" ]]; then
-      stop_provider_lease modal "$lease" "$slug"
-    fi
-  }
-  trap cleanup RETURN
-
-  local out
-  capture_run out run_in_repo "$cb" warmup \
-    --provider modal \
-    --modal-app "${CRABBOX_MODAL_APP:-crabbox}" \
-    --modal-image "${CRABBOX_MODAL_IMAGE:-python:3.13-slim}" \
-    --modal-python "$python_bin" \
-    --timing-json
-  printf '%s\n' "$out"
-  lease="$(printf '%s\n' "$out" | extract_lease)"
-  slug="$(printf '%s\n' "$out" | extract_slug)"
-  test -n "$lease"
-  test -n "$slug"
-
-  run_in_repo "$cb" status --provider modal --id "$slug" --wait
-  run_in_repo "$cb" run --provider modal --id "$slug" --modal-python "$python_bin" --no-sync -- python -c 'print("crabbox-modal-ok")'
-  run_in_repo "$cb" list --provider modal --json | jq 'map({id:(.id // .CloudID),slug:(.slug // .labels.slug),provider:(.provider // .Provider // .labels.provider),state:(.state // .labels.state // .status)})'
-  stop_provider_lease modal "$lease" "$slug"
-  lease=""
-}
-
-daytona_smoke() {
-  need_tool jq
-
-  local snapshot="${CRABBOX_DAYTONA_SNAPSHOT:-${DAYTONA_SNAPSHOT:-$(config_value daytona.snapshot || true)}}"
-  if [[ -z "$snapshot" ]]; then
-    echo "daytona smoke requires CRABBOX_DAYTONA_SNAPSHOT, DAYTONA_SNAPSHOT, or daytona.snapshot" >&2
-    return 2
-  fi
-  run_in_repo "$cb" run --provider daytona --daytona-snapshot "$snapshot" --no-sync -- echo crabbox-daytona-ok
-  run_in_repo "$cb" list --provider daytona --json | jq 'map({id:(.id // .CloudID),slug:(.slug // .labels.slug),provider:(.provider // .Provider // .labels.provider),state:(.state // .labels.state // .status)})'
-}
-
-namespace_smoke() {
-  need_tool jq
-
-  if ! command -v devbox >/dev/null 2>&1; then
-    echo "namespace-devbox smoke requires the Namespace devbox CLI on PATH" >&2
-    return 2
-  fi
-  run_in_repo "$cb" run \
-    --provider namespace-devbox \
-    --namespace-size "${CRABBOX_NAMESPACE_SIZE:-S}" \
-    --namespace-delete-on-release \
-    --no-sync -- echo crabbox-namespace-ok
-  run_in_repo "$cb" list --provider namespace-devbox --json | jq 'map({id:.id,slug:.slug,provider:.provider,state:.state})'
-}
-
-semaphore_smoke() {
-  need_tool jq
-  need_tool rg
-
-  local semaphore_host="${CRABBOX_SEMAPHORE_HOST:-${SEMAPHORE_HOST:-$(config_value semaphore.host || true)}}"
-  local semaphore_project="${CRABBOX_SEMAPHORE_PROJECT:-${SEMAPHORE_PROJECT:-$(config_value semaphore.project || true)}}"
-  local semaphore_token="${CRABBOX_SEMAPHORE_TOKEN:-${SEMAPHORE_API_TOKEN:-$(config_value semaphore.token || true)}}"
-  if [[ -z "$semaphore_host" ]]; then
-    echo "semaphore smoke requires CRABBOX_SEMAPHORE_HOST, SEMAPHORE_HOST, or semaphore.host" >&2
-    return 2
-  fi
-  if [[ -z "$semaphore_project" ]]; then
-    echo "semaphore smoke requires CRABBOX_SEMAPHORE_PROJECT, SEMAPHORE_PROJECT, or semaphore.project" >&2
-    return 2
-  fi
-  if [[ -z "$semaphore_token" ]]; then
-    echo "semaphore smoke requires CRABBOX_SEMAPHORE_TOKEN, SEMAPHORE_API_TOKEN, or semaphore.token" >&2
-    return 2
-  fi
-
-  local lease=""
-  local slug=""
-  cleanup() {
-    if [[ -n "$lease" ]]; then
-      stop_provider_lease semaphore "$lease" "$slug"
-    fi
-  }
-  trap cleanup RETURN
-
-  local out
-  capture_run out run_in_repo "$cb" warmup --provider semaphore --semaphore-host "$semaphore_host" --semaphore-project "$semaphore_project" --semaphore-idle-timeout "${CRABBOX_SEMAPHORE_IDLE_TIMEOUT:-10m}"
-  printf '%s\n' "$out"
-  lease="$(printf '%s\n' "$out" | extract_lease)"
-  slug="$(printf '%s\n' "$out" | extract_slug)"
-  test -n "$lease"
-  test -n "$slug"
-
-  run_in_repo "$cb" status --provider semaphore --id "$slug" --wait --wait-timeout 120s
-  run_in_repo "$cb" run --provider semaphore --id "$slug" --no-sync -- echo crabbox-semaphore-ok
-  run_in_repo "$cb" list --provider semaphore --json | jq 'map({id:.id,slug:.slug,provider:.provider,state:.state})'
-  stop_provider_lease semaphore "$lease" "$slug"
-  lease=""
-}
-
-wandb_smoke() {
-  need_tool jq
-
-  if [[ -z "${CRABBOX_WANDB_API_KEY:-${WANDB_API_KEY:-}}" ]]; then
-    echo "wandb smoke requires CRABBOX_WANDB_API_KEY or WANDB_API_KEY" >&2
-    return 2
-  fi
-
-  run_in_repo "$cb" doctor --provider wandb
-  run_in_repo "$cb" run \
-    --provider wandb \
-    --no-sync \
-    --wandb-max-lifetime 60 \
-    -- echo crabbox-wandb-ok
-  run_in_repo "$cb" list --provider wandb --json | jq 'map({id:(.id // .CloudID),provider:(.provider // .Provider),state:(.status // .state)})'
-}
-
-sprites_smoke() {
-  need_tool jq
-  need_tool rg
-
-  if ! command -v sprite >/dev/null 2>&1; then
-    echo "sprites smoke requires the authenticated Sprites sprite CLI on PATH" >&2
-    return 2
-  fi
-  local sprites_token="${CRABBOX_SPRITES_TOKEN:-${SPRITES_TOKEN:-${SPRITE_TOKEN:-${SETUP_SPRITE_TOKEN:-}}}}"
-  if [[ -z "$sprites_token" ]]; then
-    echo "sprites smoke requires CRABBOX_SPRITES_TOKEN, SPRITES_TOKEN, SPRITE_TOKEN, or SETUP_SPRITE_TOKEN" >&2
-    return 2
-  fi
-
-  local lease=""
-  local slug=""
-  cleanup() {
-    if [[ -n "$lease" ]]; then
-      stop_provider_lease sprites "$lease" "$slug"
-    fi
-  }
-  trap cleanup RETURN
-
-  local out
-  capture_run out run_in_repo "$cb" warmup --provider sprites --timing-json
-  printf '%s\n' "$out"
-  lease="$(printf '%s\n' "$out" | extract_lease)"
-  slug="$(printf '%s\n' "$out" | extract_slug)"
-  test -n "$lease"
-  test -n "$slug"
-
-  run_in_repo "$cb" status --provider sprites --id "$slug" --wait --wait-timeout 120s
-  run_in_repo "$cb" ssh --provider sprites --id "$slug"
-  run_in_repo "$cb" run --provider sprites --id "$slug" --shell -- 'echo crabbox-sprites-ok && pwd'
-  run_in_repo "$cb" list --provider sprites --json | jq 'map({id:.id,slug:.slug,provider:.provider,state:.state})'
-  stop_provider_lease sprites "$lease" "$slug"
-  lease=""
-}
-
-run_coordinator_preamble() {
-  run_in_repo "$cb" whoami --json
-  run_in_repo "$cb" doctor
-  run_in_repo "$cb" sync-plan | sed -n '1,80p'
-}
-
-needs_coordinator_preamble() {
-  [[ "${CRABBOX_LIVE_COORDINATOR:-1}" == "1" ]]
-}
-
-if needs_coordinator_preamble; then
-  run_coordinator_preamble
-fi
+run_in_repo "$cb" whoami --json
+run_in_repo "$cb" doctor
+run_in_repo "$cb" sync-plan | sed -n '1,80p'
 
 if has_provider aws; then
   provider_smoke aws --type "${CRABBOX_LIVE_AWS_TYPE:-t3.small}" --ttl 15m --idle-timeout 5m
@@ -419,37 +103,4 @@ if has_provider blacksmith-testbox; then
   blacksmith_smoke
 fi
 
-if has_provider e2b; then
-  e2b_smoke
-fi
-
-if has_provider modal; then
-  modal_smoke
-fi
-
-if has_provider daytona; then
-  daytona_smoke
-fi
-
-if has_provider namespace-devbox || has_provider namespace; then
-  namespace_smoke
-fi
-
-if has_provider semaphore; then
-  semaphore_smoke
-fi
-
-if has_provider sprites; then
-  sprites_smoke
-fi
-
-if has_provider wandb; then
-  wandb_smoke
-fi
-
-admin_out="$(run_in_repo "$cb" admin leases --state active --json 2>&1)" || {
-  printf 'warning: admin active-lease check skipped: %s\n' "$admin_out" >&2
-  exit 0
-}
-need_tool jq
-printf '%s\n' "$admin_out" | jq 'length'
+run_in_repo "$cb" admin leases --state active --json | jq 'length'

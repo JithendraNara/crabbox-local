@@ -12,10 +12,8 @@ const maxGitHubTeamPages = 10;
 interface OAuthPending {
   id: string;
   state: string;
-  pollSecretHash?: string;
-  mode?: "cli" | "portal";
+  pollSecretHash: string;
   provider?: Provider;
-  returnTo?: string;
   createdAt: string;
   expiresAt: string;
   token?: string;
@@ -68,41 +66,6 @@ export async function githubAuthRoute(
   return json({ error: "not_found" }, { status: 404 });
 }
 
-export async function githubPortalLogin(
-  request: Request,
-  storage: DurableObjectStorage,
-  env: Env,
-): Promise<Response> {
-  const clientID = env.CRABBOX_GITHUB_CLIENT_ID;
-  if (!clientID || !env.CRABBOX_GITHUB_CLIENT_SECRET) {
-    return html("Crabbox login unavailable", "GitHub OAuth is not configured.", 503);
-  }
-  const pendingCount = await cleanupExpiredPendingOAuth(storage);
-  if (pendingCount >= maxPendingOAuthLogins) {
-    return html("Crabbox login busy", "Too many pending GitHub logins. Try again shortly.", 429);
-  }
-  const url = new URL(request.url);
-  const pending = newPendingOAuth({
-    mode: "portal",
-    returnTo: safePortalReturnTo(url.searchParams.get("returnTo")),
-  });
-  await storePendingOAuth(storage, pending);
-
-  return redirect(githubAuthorizeURLFor(request, env, clientID, pending.state), 302);
-}
-
-export function githubPortalLogout(): Response {
-  return html(
-    "Crabbox logged out",
-    "Your Crabbox portal session has ended.",
-    200,
-    {
-      "set-cookie": portalSessionCookie("", 0),
-    },
-    `<p><a href="/portal/login">Log in again</a></p>`,
-  );
-}
-
 async function githubAuthStart(
   request: Request,
   storage: DurableObjectStorage,
@@ -132,55 +95,33 @@ async function githubAuthStart(
       { status: 429 },
     );
   }
-  const pending = newPendingOAuth({
-    mode: "cli",
+  const id = randomID("login");
+  const state = randomID("state");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+  const pending: OAuthPending = {
+    id,
+    state,
     pollSecretHash: input.pollSecretHash,
-  });
-  if (input.provider === "aws" || input.provider === "hetzner" || input.provider === "gcp") {
+    createdAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  if (input.provider === "aws" || input.provider === "hetzner" || input.provider === "static-ssh") {
     pending.provider = input.provider;
   }
-  await storePendingOAuth(storage, pending);
+  await storage.put(oauthKey(id), pending);
+  await storage.put(oauthStateKey(state), id);
 
-  return json({
-    loginID: pending.id,
-    url: githubAuthorizeURLFor(request, env, clientID, pending.state),
-    expiresAt: pending.expiresAt,
-  });
-}
-
-function newPendingOAuth(
-  input: Omit<OAuthPending, "id" | "state" | "createdAt" | "expiresAt">,
-): OAuthPending {
-  const now = new Date();
-  return {
-    ...input,
-    id: randomID("login"),
-    state: randomID("state"),
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
-  };
-}
-
-async function storePendingOAuth(
-  storage: DurableObjectStorage,
-  pending: OAuthPending,
-): Promise<void> {
-  await storage.put(oauthKey(pending.id), pending);
-  await storage.put(oauthStateKey(pending.state), pending.id);
-}
-
-function githubAuthorizeURLFor(
-  request: Request,
-  env: Env,
-  clientID: string,
-  state: string,
-): string {
   const authorize = new URL(githubAuthorizeURL);
   authorize.searchParams.set("client_id", clientID);
   authorize.searchParams.set("redirect_uri", githubRedirectURI(request, env));
   authorize.searchParams.set("scope", "read:user user:email read:org");
   authorize.searchParams.set("state", state);
-  return authorize.toString();
+  return json({
+    loginID: id,
+    url: authorize.toString(),
+    expiresAt: expiresAt.toISOString(),
+  });
 }
 
 async function githubAuthCallback(
@@ -197,7 +138,7 @@ async function githubAuthCallback(
   if (!pending || pending.state !== state || Date.parse(pending.expiresAt) <= Date.now()) {
     return html(
       "Crabbox login expired",
-      "The login request expired. Run crabbox login --url <broker-url> again.",
+      "The login request expired. Run crabbox login again.",
       400,
     );
   }
@@ -211,7 +152,7 @@ async function githubAuthCallback(
     const identity = await githubIdentity(accessToken);
     const requestedOrg = requestOrg(
       new Request(request.url, {
-        headers: { "x-crabbox-org": env.CRABBOX_DEFAULT_ORG ?? "" },
+        headers: { "x-crabbox-org": env.CRABBOX_DEFAULT_ORG ?? "openclaw" },
       }),
       env,
     );
@@ -230,12 +171,6 @@ async function githubAuthCallback(
     pending.org = org;
     pending.login = identity.login;
     await storage.put(oauthKey(pending.id), pending);
-    if (pending.mode === "portal") {
-      await deletePendingOAuth(storage, pending);
-      return redirect(pending.returnTo || "/portal", 302, {
-        "set-cookie": portalSessionCookie(pending.token, 30 * 24 * 60 * 60),
-      });
-    }
     return html(
       "Crabbox login complete",
       "GitHub authorized Crabbox. You can close this tab and return to the terminal.",
@@ -258,12 +193,6 @@ async function githubAuthPoll(request: Request, storage: DurableObjectStorage): 
   const pending = await storage.get<OAuthPending>(oauthKey(input.loginID));
   if (!pending || Date.parse(pending.expiresAt) <= Date.now()) {
     return json({ status: "expired" }, { status: 410 });
-  }
-  if (pending.mode === "portal") {
-    return json({ error: "forbidden" }, { status: 403 });
-  }
-  if (!pending.pollSecretHash) {
-    return json({ error: "invalid_poll" }, { status: 400 });
   }
   if ((await sha256Hex(input.pollSecret)) !== pending.pollSecretHash) {
     return json({ error: "forbidden" }, { status: 403 });
@@ -410,16 +339,8 @@ async function requireAllowedTeamMembership(
 
 function allowedGitHubOrgs(env: Env): string[] {
   const raw = env.CRABBOX_GITHUB_ALLOWED_ORGS || env.CRABBOX_GITHUB_ALLOWED_ORG;
-  const configured = raw
-    ? raw
-        .split(",")
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean)
-    : [];
-  if (configured.length > 0) {
-    return configured;
-  }
-  return [(env.CRABBOX_DEFAULT_ORG || "").trim().toLowerCase()].filter(Boolean);
+  const values = raw ? raw.split(",") : [env.CRABBOX_DEFAULT_ORG || "openclaw"];
+  return values.map((value) => value.trim().toLowerCase()).filter(Boolean);
 }
 
 function allowedGitHubTeams(env: Env, defaultOrg: string): AllowedGitHubTeam[] {
@@ -522,51 +443,13 @@ function randomID(prefix: string): string {
   return `${prefix}_${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function html(
-  title: string,
-  message: string,
-  status = 200,
-  headers: Record<string, string> = {},
-  extraBody = "",
-): Response {
+function html(title: string, message: string, status = 200): Response {
   const escapedTitle = escapeHTML(title);
   const escapedMessage = escapeHTML(message);
   return new Response(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:42rem;margin:5rem auto;padding:0 1rem;line-height:1.5;color:#111}code{background:#f4f4f5;padding:.15rem .3rem;border-radius:4px}</style></head><body><h1>${escapedTitle}</h1><p>${escapedMessage}</p>${extraBody}</body></html>`,
-    { status, headers: { "content-type": "text/html; charset=utf-8", ...headers } },
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:42rem;margin:5rem auto;padding:0 1rem;line-height:1.5;color:#111}code{background:#f4f4f5;padding:.15rem .3rem;border-radius:4px}</style></head><body><h1>${escapedTitle}</h1><p>${escapedMessage}</p></body></html>`,
+    { status, headers: { "content-type": "text/html; charset=utf-8" } },
   );
-}
-
-function redirect(location: string, status = 302, headers: Record<string, string> = {}): Response {
-  return new Response(null, {
-    status,
-    headers: {
-      location,
-      ...headers,
-    },
-  });
-}
-
-function portalSessionCookie(value: string, maxAgeSeconds: number): string {
-  const attrs = [
-    `crabbox_session=${encodeURIComponent(value)}`,
-    "Path=/",
-    "HttpOnly",
-    "Secure",
-    "SameSite=Lax",
-    `Max-Age=${Math.max(0, Math.trunc(maxAgeSeconds))}`,
-  ];
-  return attrs.join("; ");
-}
-
-function safePortalReturnTo(value: string | null): string {
-  if (!value || !value.startsWith("/portal")) {
-    return "/portal";
-  }
-  if (value.startsWith("//") || value.includes("://")) {
-    return "/portal";
-  }
-  return value;
 }
 
 function escapeHTML(value: string): string {

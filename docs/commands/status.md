@@ -14,7 +14,7 @@ Flags:
 
 ```text
 --id <lease-id-or-slug>
---provider hetzner|aws|static-ssh|blacksmith-testbox
+--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox
 --wait
 --wait-timeout <duration>
 --json

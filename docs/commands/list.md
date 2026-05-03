@@ -16,6 +16,6 @@ In `blacksmith-testbox` mode this forwards to `blacksmith testbox list`. Human o
 Flags:
 
 ```text
---provider hetzner|aws|static-ssh|blacksmith-testbox
+--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox
 --json
 ```

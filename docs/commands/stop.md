@@ -12,5 +12,5 @@ The argument accepts the stable `cbx_...` ID or an active friendly slug. In `bla
 Flags:
 
 ```text
---provider hetzner|aws|static-ssh|blacksmith-testbox
+--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox
 ```

@@ -18,7 +18,7 @@ On success, `warmup` prints a concise total duration line. Add `--timing-json` t
 Flags:
 
 ```text
---provider hetzner|aws|static-ssh|blacksmith-testbox
+--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox
 --profile <name>
 --class <name>
 --type <provider-type>
@@ -47,8 +47,6 @@ changing capacity.
 `--actions-runner` immediately registers the warm box as an ephemeral self-hosted GitHub Actions runner for the current repository. Most projects should prefer `crabbox actions hydrate --id <lease-id-or-slug>` after warmup because it also dispatches the workflow and waits for the ready marker.
 
 `--actions-runner` is not supported with `blacksmith-testbox` because Blacksmith owns Testbox workflow hydration.
-
-With `--provider static-ssh`, warmup creates a local claim and validates SSH reachability. No cloud provisioning occurs — the static machine must already be running and reachable. The `--keep` flag is always true for static-ssh (the machine is not destroyed on release).
 
 New leases use per-lease SSH keys under the user config directory:
 

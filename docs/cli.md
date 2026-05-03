@@ -33,7 +33,7 @@ crabbox init [--force]
 crabbox config show [--json]
 crabbox config path
 crabbox config set-broker --url <url> --token-stdin [--provider hetzner|aws|static-ssh]
-crabbox warmup [--provider hetzner|aws|static-ssh|blacksmith-testbox] [--profile <name>] [--idle-timeout <duration>] [--timing-json]
+crabbox warmup [--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox] [--profile <name>] [--idle-timeout <duration>] [--timing-json]
 crabbox run [--id <lease-id-or-slug>] [--shell] [--checksum] [--debug] [--force-sync-large] [--timing-json] [--blacksmith-workflow <workflow>] -- <command...>
 crabbox sync-plan [--limit <n>]
 crabbox history [--lease <lease-id>] [--owner <email>] [--org <name>] [--limit <n>] [--json]
@@ -200,7 +200,7 @@ Flags:
 
 ```text
 --id <lease-id-or-slug>  reuse an existing lease
---provider <name>        hetzner, aws, static-ssh, blacksmith-testbox
+--provider <name>        hetzner, aws, or blacksmith-testbox
 --profile <name>        profile to run on
 --class <name>          machine class override
 --type <name>           provider server or instance type override
@@ -352,19 +352,6 @@ cache:
   purgeOnRelease: false
 ```
 
-Static SSH config (local or always-on machines):
-
-```yaml
-provider: static-ssh
-static:
-  host: 192.168.1.100          # hostname, IP, or Tailscale address
-ssh:
-  user: myuser
-  key: ~/.ssh/id_ed25519
-  port: "22"
-workRoot: /home/myuser/crabbox
-```
-
 Blacksmith Testbox config:
 
 ```yaml
@@ -397,7 +384,6 @@ CRABBOX_SSH_KEY
 CRABBOX_SSH_USER
 CRABBOX_SSH_PORT
 CRABBOX_SSH_FALLBACK_PORTS       comma-separated fallback ports, or none
-CRABBOX_STATIC_SSH_HOST          hostname or IP for static-ssh provider
 CRABBOX_WORK_ROOT
 CRABBOX_ACTIONS_WORKFLOW
 CRABBOX_ACTIONS_JOB

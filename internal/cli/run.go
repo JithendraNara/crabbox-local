@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -23,105 +24,90 @@ func applyCapacityMarketFlag(cfg *Config, fs *flag.FlagSet, market string) error
 	}
 }
 
-func applyServerTypeFlagOverrides(cfg *Config, fs *flag.FlagSet, serverType string) {
-	if flagWasSet(fs, "type") {
-		cfg.ServerType = serverType
-		cfg.ServerTypeExplicit = true
-		return
-	}
-	if cfg.ServerTypeExplicit {
-		return
-	}
-	if cfg.ServerType == "" || flagWasSet(fs, "provider") || flagWasSet(fs, "class") || flagWasSet(fs, "target") || flagWasSet(fs, "windows-mode") || flagWasSet(fs, "arch") {
-		cfg.ServerType = serverTypeForConfig(*cfg)
-	}
-}
-
 func (a App) warmup(ctx context.Context, args []string) error {
 	started := time.Now()
 	defaults := defaultConfig()
 	fs := newFlagSet("warmup", a.Stderr)
-	leaseFlags := registerLeaseCreateFlags(fs, defaults)
+	provider := fs.String("provider", defaults.Provider, "provider: hetzner, aws, static-ssh, or blacksmith-testbox")
+	profile := fs.String("profile", defaults.Profile, "profile")
+	class := fs.String("class", defaults.Class, "machine class")
+	serverType := fs.String("type", getenv("CRABBOX_SERVER_TYPE", ""), "provider server/instance type")
+	market := fs.String("market", defaults.Capacity.Market, "capacity market: spot or on-demand")
+	ttl := fs.Duration("ttl", defaults.TTL, "maximum lease lifetime")
+	idleTimeout := fs.Duration("idle-timeout", defaults.IdleTimeout, "idle timeout")
 	keep := fs.Bool("keep", true, "keep server after warmup")
 	actionsRunner := fs.Bool("actions-runner", false, "register this box as an ephemeral GitHub Actions runner")
 	reclaim := fs.Bool("reclaim", false, "claim this lease for the current repo")
 	timingJSON := fs.Bool("timing-json", false, "print final timing as JSON")
+	blacksmithFlags := registerBlacksmithFlags(fs, defaults)
 	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-	requestedSlug, err := requestedLeaseSlug(*leaseFlags.Slug)
-	if err != nil {
 		return err
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	if err := applyLeaseCreateFlags(&cfg, fs, leaseFlags); err != nil {
+	if flagWasSet(fs, "provider") {
+		cfg.Provider = *provider
+	}
+	cfg.Profile = *profile
+	cfg.Class = *class
+	if flagWasSet(fs, "type") {
+		cfg.ServerType = *serverType
+		cfg.ServerTypeExplicit = true
+	}
+	if err := applyCapacityMarketFlag(&cfg, fs, *market); err != nil {
 		return err
+	}
+	if cfg.ServerType == "" || ((flagWasSet(fs, "provider") || flagWasSet(fs, "class")) && !flagWasSet(fs, "type")) {
+		cfg.ServerType = serverTypeForProviderClass(cfg.Provider, *class)
+	}
+	if flagWasSet(fs, "ttl") {
+		cfg.TTL = *ttl
+	}
+	if flagWasSet(fs, "idle-timeout") {
+		cfg.IdleTimeout = *idleTimeout
+	}
+	applyBlacksmithFlagOverrides(&cfg, fs, blacksmithFlags)
+	if cfg.TTL <= 0 {
+		return exit(2, "ttl must be positive")
+	}
+	if cfg.IdleTimeout <= 0 {
+		return exit(2, "idle timeout must be positive")
 	}
 	repo, err := findRepo()
 	if err != nil {
 		return err
 	}
-	backend, err := loadBackend(cfg, runtimeForApp(a))
+	if isBlacksmithProvider(cfg.Provider) {
+		if *actionsRunner {
+			return exit(2, "--actions-runner is not supported for provider=%s; Blacksmith owns runner hydration", cfg.Provider)
+		}
+		return a.blacksmithWarmup(ctx, cfg, repo, *keep, *reclaim, *timingJSON)
+	}
+
+	coord, useCoordinator, err := newCoordinatorClient(cfg)
 	if err != nil {
 		return err
 	}
-	options := leaseOptionsFromConfig(cfg)
-	if delegated, ok := backend.(DelegatedRunBackend); ok {
-		if err := delegated.Warmup(ctx, WarmupRequest{Repo: repo, Options: options, Keep: *keep, Reclaim: *reclaim, ActionsRunner: *actionsRunner, RequestedSlug: requestedSlug, TimingJSON: *timingJSON}); err != nil {
-			return err
-		}
-		a.syncExternalRunnersBestEffort(ctx, cfg, backend)
-		return nil
-	}
-	sshBackend, ok := backend.(SSHLeaseBackend)
-	if !ok {
-		return exit(2, "provider=%s does not support warmup", backend.Spec().Name)
-	}
-	if *actionsRunner {
-		if err := validateActionsRunnerCapability(backend, cfg); err != nil {
-			return err
-		}
-	}
-	lease, err := sshBackend.Acquire(ctx, AcquireRequest{Repo: repo, Options: options, Keep: *keep, Reclaim: *reclaim, RequestedSlug: requestedSlug})
-	if err != nil {
-		return err
-	}
-	server, target, leaseID := lease.Server, lease.SSH, lease.LeaseID
-	applyResolvedServerConfig(&cfg, server)
-	if err := claimLeaseTargetForRepoConfig(leaseID, serverSlug(server), cfg, server, target, repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
-		a.releaseBackendLeaseBestEffort(ctx, sshBackend, LeaseTarget{Server: server, SSH: target, LeaseID: leaseID, Coordinator: lease.Coordinator})
-		return err
-	}
-	if serverTailscaleMetadata(server).Enabled {
-		target = bootstrapNetworkTarget(cfg, server, target)
-		if err := waitForSSHReady(ctx, &target, a.Stderr, "tailscale metadata", 2*time.Minute); err == nil {
-			a.refreshTailscaleMetadata(ctx, cfg, lease.Coordinator, lease.Coordinator != nil, &server, target, leaseID)
-			_ = updateLeaseClaimEndpoint(leaseID, server, target)
-		} else {
-			fmt.Fprintf(a.Stderr, "warning: tailscale metadata wait failed: %v\n", err)
-		}
-	}
-	if resolved, err := resolveNetworkTarget(ctx, cfg, server, target); err != nil {
-		a.releaseBackendLeaseBestEffort(ctx, sshBackend, LeaseTarget{Server: server, SSH: target, LeaseID: leaseID, Coordinator: lease.Coordinator})
-		return err
+	var server Server
+	var target SSHTarget
+	var leaseID string
+	if useCoordinator {
+		server, target, leaseID, err = a.acquireCoordinatorWithRetry(ctx, cfg, coord, *keep)
 	} else {
-		target = resolved.Target
-		_ = updateLeaseClaimEndpoint(leaseID, server, target)
-		if resolved.FallbackReason != "" {
-			fmt.Fprintf(a.Stderr, "network fallback %s\n", resolved.FallbackReason)
-		}
+		server, target, leaseID, err = a.acquireWithRetry(ctx, cfg, *keep)
 	}
-	network := readyNetworkDisplay(cfg, server, target)
-	meta := serverTailscaleMetadata(server)
-	tailscaleSummary := ""
-	if meta.Enabled {
-		tailscaleSummary = " tailscale=" + blank(tailscaleTargetHost(meta), blank(meta.State, "requested"))
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(a.Stdout, "leased %s slug=%s provider=%s server=%s type=%s ip=%s%s idle_timeout=%s expires=%s\n", leaseID, blank(serverSlug(server), "-"), cfg.Provider, server.DisplayID(), server.ServerType.Name, server.PublicNet.IPv4.IP, tailscaleSummary, cfg.IdleTimeout, blank(leaseLabelTimeDisplay(server.Labels["expires_at"]), server.Labels["expires_at"]))
-	fmt.Fprintf(a.Stdout, "ready ssh=%s@%s:%s network=%s workroot=%s\n", redactedSSHUser(cfg, server, target), target.Host, target.Port, network, cfg.WorkRoot)
+	applyResolvedServerConfig(&cfg, server)
+	if err := claimLeaseForRepo(leaseID, serverSlug(server), repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
+		a.releaseAcquiredLeaseBestEffort(ctx, cfg, coord, useCoordinator, server, target, leaseID)
+		return err
+	}
+	fmt.Fprintf(a.Stdout, "leased %s slug=%s provider=%s server=%s type=%s ip=%s idle_timeout=%s expires=%s\n", leaseID, blank(serverSlug(server), "-"), cfg.Provider, server.DisplayID(), server.ServerType.Name, target.Host, cfg.IdleTimeout, blank(leaseLabelTimeDisplay(server.Labels["expires_at"]), server.Labels["expires_at"]))
+	fmt.Fprintf(a.Stdout, "ready ssh=%s@%s:%s workroot=%s\n", target.User, target.Host, target.Port, cfg.WorkRoot)
 	if *actionsRunner {
 		ghRepo, err := resolveGitHubRepo(repo, cfg.Actions.Repo)
 		if err != nil {
@@ -150,160 +136,60 @@ func (a App) warmup(ctx context.Context, args []string) error {
 func (a App) runCommand(ctx context.Context, args []string) (err error) {
 	defaults := defaultConfig()
 	fs := newFlagSet("run", a.Stderr)
-	leaseFlags := registerLeaseCreateFlags(fs, defaults)
+	provider := fs.String("provider", defaults.Provider, "provider: hetzner, aws, static-ssh, or blacksmith-testbox")
+	profile := fs.String("profile", defaults.Profile, "profile")
+	class := fs.String("class", defaults.Class, "machine class")
+	serverType := fs.String("type", getenv("CRABBOX_SERVER_TYPE", ""), "provider server/instance type")
+	market := fs.String("market", defaults.Capacity.Market, "capacity market: spot or on-demand")
+	ttl := fs.Duration("ttl", defaults.TTL, "maximum lease lifetime")
+	idleTimeout := fs.Duration("idle-timeout", defaults.IdleTimeout, "idle timeout")
 	leaseIDFlag := fs.String("id", "", "existing lease or server id")
 	keep := fs.Bool("keep", false, "keep server after command")
-	keepOnFailure := fs.Bool("keep-on-failure", false, "keep a newly acquired lease when the remote command exits non-zero")
 	noSync := fs.Bool("no-sync", false, "skip rsync")
 	syncOnly := fs.Bool("sync-only", false, "sync and exit")
-	noHydrate := fs.Bool("no-hydrate", false, "skip configured Actions hydration")
 	debugSync := fs.Bool("debug", false, "print detailed sync timing")
 	shellMode := fs.Bool("shell", false, "run command through the remote shell")
 	checksumSync := fs.Bool("checksum", false, "use checksum rsync instead of size/time")
 	forceSyncLarge := fs.Bool("force-sync-large", false, "allow unusually large sync candidates")
-	fullResync := fs.Bool("full-resync", false, "reset the remote workdir and force a complete sync")
-	freshSync := fs.Bool("fresh-sync", false, "alias for --full-resync")
 	junitResults := fs.String("junit", "", "comma-separated remote JUnit XML paths to record")
-	resultsAuto := fs.Bool("results-auto", false, "scan common remote JUnit XML paths after the command")
-	captureStdout := fs.String("capture-stdout", "", "write remote stdout to a local file instead of the terminal")
-	captureStderr := fs.String("capture-stderr", "", "write remote stderr to a local file instead of the terminal")
-	captureOnFail := fs.Bool("capture-on-fail", false, "compatibility alias; failure bundles are saved by default on non-zero exit")
-	preflight := fs.Bool("preflight", false, "print remote capability preflight before running the command")
-	preflightTools := fs.String("preflight-tools", "", "comma-separated preflight tools to probe; overrides run.preflightTools")
-	scriptPath := fs.String("script", "", "upload and run a local script file")
-	scriptStdin := fs.Bool("script-stdin", false, "read a script from stdin, upload it, and run it")
-	freshPRValue := fs.String("fresh-pr", "", "run from a fresh remote checkout of a GitHub PR: owner/repo#123, URL, or number")
-	applyLocalPatch := fs.Bool("apply-local-patch", false, "apply the local git diff on top of --fresh-pr checkout")
-	envHelper := fs.String("env-helper", "", "persist profile env as a reusable remote helper name under .crabbox/env/")
-	runLabel := fs.String("label", "", "human-readable label for this run")
-	presetName := fs.String("preset", "", "configured profile preset to expand into a command")
-	scenario := fs.String("scenario", "", "preset variable shorthand for --preset-var scenario=<value>")
-	emitProof := fs.String("emit-proof", "", "write a generated proof block after a successful run")
-	proofTemplate := fs.String("proof-template", "", "proof template name from the selected profile")
-	stopAfter := fs.String("stop-after", "", "stop policy for the lease: success, always, failure, or never")
-	leaseOutput := fs.String("lease-output", "", "write a small JSON lease handle for orchestrators")
-	var downloads stringListFlag
-	var allowEnvFlags stringListFlag
-	var envProfileFlags stringListFlag
-	var presetVars stringListFlag
-	var artifactGlobs stringListFlag
-	fs.Var(&downloads, "download", "download a remote file after command success: remote=local; repeatable")
-	fs.Var(&allowEnvFlags, "allow-env", "allow an environment variable for this run; repeatable or comma-separated")
-	fs.Var(&envProfileFlags, "env-from-profile", "load allowed environment values from a local profile file; repeatable")
-	fs.Var(&presetVars, "preset-var", "preset template variable name=value; repeatable or comma-separated")
-	fs.Var(&artifactGlobs, "artifact-glob", "collect remote files matching a safe glob into a local run artifact tarball; repeatable")
 	reclaim := fs.Bool("reclaim", false, "claim this lease for the current repo")
 	timingJSON := fs.Bool("timing-json", false, "print final timing as JSON")
+	blacksmithFlags := registerBlacksmithFlags(fs, defaults)
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	var cleanup leaseCleanupResult
-	var finalTimingReport *timingReport
-	defer func() {
-		if !*timingJSON || finalTimingReport == nil {
-			return
-		}
-		report := *finalTimingReport
-		cleanup.apply(&report)
-		if writeErr := writeTimingJSON(a.Stderr, report); writeErr != nil && err == nil {
-			err = writeErr
-		}
-	}()
 	command := fs.Args()
 	if len(command) > 0 && command[0] == "--" {
 		command = command[1:]
 	}
-	runLabelValue := strings.TrimSpace(*runLabel)
-	requestedSlug, err := requestedLeaseSlug(*leaseFlags.Slug)
-	if err != nil {
-		return err
+	if len(command) == 0 && !*syncOnly {
+		return exit(2, "usage: crabbox run [flags] -- <command...>")
 	}
-	if requestedSlug != "" && strings.TrimSpace(*leaseIDFlag) != "" {
-		return exit(2, "--slug only applies when creating a new lease; omit --id or use the existing slug")
-	}
-	fullResyncRequested := *fullResync || *freshSync
 
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	cfg.Profile = *leaseFlags.Profile
-	if err := applySelectedProfileConfig(&cfg); err != nil {
+	if flagWasSet(fs, "provider") {
+		cfg.Provider = *provider
+	}
+	cfg.Profile = *profile
+	cfg.Class = *class
+	if flagWasSet(fs, "type") {
+		cfg.ServerType = *serverType
+		cfg.ServerTypeExplicit = true
+	}
+	if err := applyCapacityMarketFlag(&cfg, fs, *market); err != nil {
 		return err
 	}
-	if err := applyLeaseCreateFlagsForLease(&cfg, fs, leaseFlags, *leaseIDFlag); err != nil {
-		return err
+	if cfg.ServerType == "" || ((flagWasSet(fs, "provider") || flagWasSet(fs, "class")) && !flagWasSet(fs, "type")) {
+		cfg.ServerType = serverTypeForProviderClass(cfg.Provider, *class)
 	}
-	expansion, err := expandRunProfile(cfg, *presetName, *scenario, presetVars, command, *shellMode, *preflight, artifactGlobs, *proofTemplate)
-	if err != nil {
-		return err
+	if flagWasSet(fs, "ttl") {
+		cfg.TTL = *ttl
 	}
-	command = expansion.Command
-	*shellMode = expansion.Shell
-	*preflight = expansion.Preflight
-	if expansion.ProofTemplate != "" {
-		*proofTemplate = expansion.ProofTemplate
-	}
-	if expansion.PresetName != "" {
-		fmt.Fprintln(a.Stderr, formatExpandedPresetCommand(expansion.PresetName, command, *shellMode, expansion.Env, expansion.LiteralArgs))
-	}
-	if len(command) == 0 && *scriptPath == "" && !*scriptStdin && !*syncOnly {
-		return exit(2, "usage: crabbox run [flags] -- <command...>")
-	}
-	if err := validateRunStopAfterPolicy(*stopAfter); err != nil {
-		return err
-	}
-	if err := validateRunArtifactGlobs(expansion.ArtifactGlobs); err != nil {
-		return err
-	}
-	if *syncOnly {
-		if len(expansion.ArtifactGlobs) > 0 {
-			return exit(2, "--artifact-glob cannot be combined with --sync-only")
-		}
-		if strings.TrimSpace(*emitProof) != "" {
-			return exit(2, "--emit-proof cannot be combined with --sync-only")
-		}
-	}
-	if err := preflightRunLocalOutputs(*captureStdout, *captureStderr, downloads); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*leaseOutput) != "" {
-		if err := preflightLocalOutputPath("lease output", strings.TrimSpace(*leaseOutput), false); err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(*emitProof) != "" {
-		if strings.TrimSpace(*leaseOutput) != "" {
-			samePath, err := sameLocalOutputPath(strings.TrimSpace(*leaseOutput), strings.TrimSpace(*emitProof))
-			if err != nil {
-				return err
-			}
-			if samePath {
-				return exit(2, "lease output and emit proof paths must be different")
-			}
-		}
-		if err := preflightProofOutputPath(strings.TrimSpace(*emitProof), *captureStdout, *captureStderr, downloads); err != nil {
-			return err
-		}
-		if strings.TrimSpace(*proofTemplate) != "" {
-			if _, ok := cfg.ProofTemplates[strings.TrimSpace(*proofTemplate)]; !ok {
-				return exit(2, "proof template %q is not configured for profile %q", strings.TrimSpace(*proofTemplate), cfg.Profile)
-			}
-		}
-		if err := preflightLocalOutputPath("emit proof", strings.TrimSpace(*emitProof), true); err != nil {
-			return err
-		}
-	}
-	for _, value := range allowEnvFlags {
-		cfg.EnvAllow = appendUniqueStrings(cfg.EnvAllow, splitCommaList(value)...)
-	}
-	if *preflightTools != "" {
-		cfg.Run.PreflightTools = normalizePreflightToolNames(splitCommaList(*preflightTools))
-	}
-	if *preflight {
-		if err := validatePreflightTools(cfg.Run.PreflightTools); err != nil {
-			return err
-		}
+	if flagWasSet(fs, "idle-timeout") {
+		cfg.IdleTimeout = *idleTimeout
 	}
 	if flagWasSet(fs, "checksum") {
 		cfg.Sync.Checksum = *checksumSync
@@ -311,212 +197,76 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 	if *junitResults != "" {
 		cfg.Results.JUnit = splitCommaList(*junitResults)
 	}
-	if flagWasSet(fs, "results-auto") {
-		cfg.Results.Auto = *resultsAuto
+	applyBlacksmithFlagOverrides(&cfg, fs, blacksmithFlags)
+	if cfg.TTL <= 0 {
+		return exit(2, "ttl must be positive")
+	}
+	if cfg.IdleTimeout <= 0 {
+		return exit(2, "idle timeout must be positive")
 	}
 	repo, err := findRepo()
 	if err != nil {
 		return err
 	}
-	freshPR, err := parseFreshPRSpec(*freshPRValue, repo)
-	if err != nil {
-		return err
-	}
-	if !freshPR.Empty() {
-		if *noSync {
-			return exit(2, "--fresh-pr cannot be combined with --no-sync")
-		}
-		if *syncOnly {
-			return exit(2, "--fresh-pr cannot be combined with --sync-only")
-		}
-		if fullResyncRequested {
-			return exit(2, "--full-resync is redundant with --fresh-pr")
-		}
-	} else if *applyLocalPatch {
-		return exit(2, "--apply-local-patch requires --fresh-pr")
-	}
-	if fullResyncRequested && *noSync {
-		return exit(2, "--full-resync cannot be combined with --no-sync")
-	}
-	if (*scriptPath != "" || *scriptStdin) && *syncOnly {
-		return exit(2, "--script cannot be combined with --sync-only")
-	}
-	envSelection, err := selectRunEnv(cfg.EnvAllow, envProfileFlags, len(allowEnvFlags) > 0)
-	if err != nil {
-		return err
-	}
-	envSelection.Inline = mergeEnv(envSelection.Inline, expansion.Env)
-	envSelection.Effective = mergeEnv(envSelection.Effective, expansion.Env)
-	envHelperName := strings.TrimSpace(*envHelper)
-	if envHelperName != "" && len(envSelection.Profile) == 0 {
-		return exit(2, "--env-helper requires --env-from-profile values selected by --allow-env")
-	}
-	if envHelperName != "" {
-		if *syncOnly {
-			return exit(2, "--env-helper cannot be combined with --sync-only")
-		}
-		if _, err := safeEnvHelperName(envHelperName); err != nil {
-			return err
-		}
-	}
-	if *leaseIDFlag == "" {
-		if err := validateRunArtifactGlobTarget(SSHTarget{TargetOS: cfg.TargetOS, WindowsMode: cfg.WindowsMode}, expansion.ArtifactGlobs); err != nil {
-			return err
-		}
-		if envHelperName != "" {
-			if err := validateRunEnvHelperTarget(SSHTarget{TargetOS: cfg.TargetOS, WindowsMode: cfg.WindowsMode}, runEnvHelperPath(envHelperName)); err != nil {
-				return err
-			}
-		}
-		if expansion.Profile.Doctor.Enabled && cfg.TargetOS == targetWindows && cfg.WindowsMode == windowsModeNormal {
-			return exit(2, "profile doctor is not supported for native Windows targets")
-		}
-	}
-	backend, err := loadBackend(cfg, runtimeForApp(a))
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(*leaseOutput) != "" && !backend.Spec().Features.Has(FeatureRunSession) {
-		// TODO: Let other reusable delegated providers populate RunResult.Session
-		// and advertise FeatureRunSession once their lifecycle contract is covered.
-		return exit(2, "--lease-output is not supported for provider=%s yet", backend.Spec().Name)
-	}
-	options := leaseOptionsFromConfig(cfg)
-	scriptRequested := *scriptPath != "" || *scriptStdin
-	runReq := RunRequest{
-		Repo:             repo,
-		ID:               *leaseIDFlag,
-		Options:          options,
-		Keep:             *keep,
-		KeepOnFailure:    *keepOnFailure,
-		Reclaim:          *reclaim,
-		NoSync:           *noSync,
-		SyncOnly:         *syncOnly,
-		DebugSync:        *debugSync,
-		ShellMode:        *shellMode,
-		ChecksumSync:     *checksumSync,
-		ForceSyncLarge:   *forceSyncLarge,
-		FullResync:       fullResyncRequested,
-		EnvHelper:        envHelperName,
-		CaptureStdout:    *captureStdout,
-		CaptureStderr:    *captureStderr,
-		CaptureOnFail:    *captureOnFail,
-		Preflight:        *preflight,
-		Downloads:        downloads,
-		Env:              envSelection.Effective,
-		EnvSummary:       envSelection.SummaryRequested,
-		ScriptRequested:  scriptRequested,
-		FreshPR:          freshPR,
-		ApplyLocalPatch:  *applyLocalPatch,
-		Command:          command,
-		Label:            runLabelValue,
-		RequestedSlug:    requestedSlug,
-		TimingJSON:       *timingJSON,
-		ArtifactGlobs:    expansion.ArtifactGlobs,
-		EmitProof:        strings.TrimSpace(*emitProof),
-		ProofTemplate:    strings.TrimSpace(*proofTemplate),
-		ProfileVariables: expansion.Variables,
-		StopAfter:        strings.TrimSpace(*stopAfter),
-	}
-	if delegated, ok := backend.(DelegatedRunBackend); ok {
-		if expansion.Profile.Doctor.Enabled {
-			return exit(2, "%s delegates run execution; profile doctor is not supported", backend.Spec().Name)
-		}
-		if err := RejectDelegatedSyncOptionsForSpec(backend.Spec(), runReq); err != nil {
-			return err
-		}
-		if runReq.Preflight {
-			printDelegatedPreflightUnsupported(a.Stderr, backend.Spec().Name)
-		}
-		result, runErr := delegated.Run(ctx, runReq)
-		if runErr == nil || result.Command > 0 || result.Total > 0 {
-			a.syncExternalRunnersBestEffort(ctx, cfg, backend)
-		}
-		if err := writeRunLeaseOutput(strings.TrimSpace(*leaseOutput), result.Session); err != nil {
-			if runErr == nil {
-				return err
-			}
-			fmt.Fprintf(a.Stderr, "warning: lease output failed: %v\n", err)
-		}
-		if runErr == nil && strings.TrimSpace(*emitProof) != "" {
-			proof, err := writeDelegatedRunProof(strings.TrimSpace(*emitProof), strings.TrimSpace(*proofTemplate), cfg, result, runReq)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Stderr, "artifact kind=proof path=%s bytes=%d template=%s\n", proof.Path, proof.Bytes, blank(proof.Template, "default"))
-		}
-		return runErr
-	}
-	sshBackend, ok := backend.(SSHLeaseBackend)
-	if !ok {
-		return exit(2, "provider=%s does not support run", backend.Spec().Name)
-	}
-	var script *RunScriptSpec
-	if scriptRequested {
-		script, err = loadRunScript(*scriptPath, *scriptStdin, a.Stdin)
-		if err != nil {
-			return err
-		}
-		runReq.Script = script
+	if isBlacksmithProvider(cfg.Provider) {
+		return a.blacksmithRun(ctx, cfg, repo, blacksmithRunOptions{
+			ID:          *leaseIDFlag,
+			Keep:        *keep,
+			Reclaim:     *reclaim,
+			SyncOnly:    *syncOnly,
+			Debug:       *debugSync,
+			ShellMode:   *shellMode,
+			Command:     command,
+			IdleTimeout: cfg.IdleTimeout,
+			TimingJSON:  *timingJSON,
+		})
 	}
 
 	var server Server
 	var target SSHTarget
 	var leaseID string
 	acquired := false
-	coord := backendCoordinator(backend)
-	useCoordinator := coord != nil
+	coord, useCoordinator, err := newCoordinatorClient(cfg)
+	if err != nil {
+		return err
+	}
 	recorder := &runRecorder{}
 	var runFailure error
-	failureClassificationPrinted := false
 	recordFailure := func(failure error) error {
-		if failure != nil && !failureClassificationPrinted {
-			classification := ClassifyRunFailure(1, failure.Error(), nil)
-			if classification.BlockedStage != "" && classification.BlockedStage != "unknown" {
-				fmt.Fprintf(a.Stderr, "failure classification%s\n", FormatFailureClassificationFields(classification))
-				failureClassificationPrinted = true
-			}
-		}
 		return recordRunFailure(&runFailure, failure)
 	}
-	recordCommand := runScriptRecordCommand(script, command)
 	if useCoordinator {
-		recorder = newRunRecorder(ctx, coord, cfg, recordCommand, runLabelValue, a.Stderr)
+		recorder = newRunRecorder(ctx, coord, cfg, command, a.Stderr)
 		defer func() {
 			recorder.Failed(runFailure)
 		}()
 		recorder.Event("leasing.started", "leasing", "")
 	}
 	if *leaseIDFlag != "" {
-		var lease LeaseTarget
-		lease, err = sshBackend.Resolve(ctx, ResolveRequest{Repo: repo, Options: options, ID: *leaseIDFlag, Reclaim: *reclaim})
-		if err == nil {
-			server, target, leaseID = lease.Server, lease.SSH, lease.LeaseID
-			if resolved, resolveErr := resolveNetworkTarget(ctx, cfg, server, target); resolveErr != nil {
-				err = resolveErr
-			} else {
-				target = resolved.Target
-				if resolved.FallbackReason != "" {
-					fmt.Fprintf(a.Stderr, "network fallback %s\n", resolved.FallbackReason)
+		if useCoordinator {
+			var lease CoordinatorLease
+			lease, err = coord.GetLease(ctx, *leaseIDFlag)
+			if err == nil {
+				server, target, leaseID = leaseToServerTarget(lease, cfg)
+				if !flagWasSet(fs, "idle-timeout") && lease.IdleTimeoutSeconds > 0 {
+					cfg.IdleTimeout = time.Duration(lease.IdleTimeoutSeconds) * time.Second
 				}
 			}
-		}
-		if err == nil && !flagWasSet(fs, "idle-timeout") {
-			if useCoordinator {
+		} else {
+			server, target, leaseID, err = a.findLease(ctx, cfg, *leaseIDFlag)
+			if err == nil && !flagWasSet(fs, "idle-timeout") {
 				if duration, ok := parseDurationSecondsLabel(server.Labels["idle_timeout_secs"]); ok {
 					cfg.IdleTimeout = duration
+				} else if duration, ok := parseDurationSecondsLabel(server.Labels["idle_timeout"]); ok {
+					cfg.IdleTimeout = duration
 				}
-			} else if duration, ok := parseDurationSecondsLabel(server.Labels["idle_timeout_secs"]); ok {
-				cfg.IdleTimeout = duration
-			} else if duration, ok := parseDurationSecondsLabel(server.Labels["idle_timeout"]); ok {
-				cfg.IdleTimeout = duration
 			}
 		}
 	} else {
-		var lease LeaseTarget
-		lease, err = sshBackend.Acquire(ctx, AcquireRequest{Repo: repo, Options: options, Keep: *keep, Reclaim: *reclaim, RequestedSlug: requestedSlug})
-		if err == nil {
-			server, target, leaseID = lease.Server, lease.SSH, lease.LeaseID
+		if useCoordinator {
+			server, target, leaseID, err = a.acquireCoordinatorWithRetry(ctx, cfg, coord, *keep)
+		} else {
+			server, target, leaseID, err = a.acquireWithRetry(ctx, cfg, *keep)
 		}
 		acquired = true
 	}
@@ -524,72 +274,25 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 		return recordFailure(err)
 	}
 	applyResolvedServerConfig(&cfg, server)
-	if err := enforceManagedLeaseCapabilities(cfg, server, leaseID); err != nil {
-		return recordFailure(err)
-	}
-	if err := validateRunArtifactGlobTarget(target, expansion.ArtifactGlobs); err != nil {
-		return recordFailure(err)
-	}
-	if expansion.Profile.Doctor.Enabled && isWindowsNativeTarget(target) {
-		return recordFailure(exit(2, "profile doctor is not supported for native Windows targets"))
-	}
 	if useCoordinator {
 		recorder.AttachLease(leaseID, serverSlug(server), cfg)
 	}
-	keepFailedLease := false
-	defer func() {
-		if !shouldReleaseRunLease(acquired, *keep, keepFailedLease, *stopAfter, runFailure) {
-			return
+	if err := claimLeaseForRepo(leaseID, serverSlug(server), repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
+		if acquired && !*keep {
+			a.releaseAcquiredLeaseBestEffort(ctx, cfg, coord, useCoordinator, server, target, leaseID)
 		}
-		releaseApp := a
-		if *timingJSON {
-			releaseApp.Stderr = io.Discard
-		}
-		cleanup.Attempted = true
-		cleanup.Err = releaseApp.releaseBackendLeaseBestEffort(context.Background(), sshBackend, LeaseTarget{Server: server, SSH: target, LeaseID: leaseID, Coordinator: coord})
-		cleanup.Stopped = cleanup.Err == nil
-		if cleanup.Err == nil {
-			recorder.Event("lease.released", "released", "")
-		}
-		if !*timingJSON {
-			if cleanup.Err != nil {
-				fmt.Fprintf(a.Stderr, "lease cleanup stopped=false policy=%s lease=%s slug=%s error=%q\n", blank(*stopAfter, "auto"), leaseID, blank(serverSlug(server), "-"), cleanup.Err.Error())
-				if err == nil {
-					err = exit(7, "lease cleanup failed for %s: %v", leaseID, cleanup.Err)
-				}
-				return
-			}
-			fmt.Fprintf(a.Stderr, "lease cleanup stopped=true policy=%s lease=%s slug=%s\n", blank(*stopAfter, "auto"), leaseID, blank(serverSlug(server), "-"))
-		}
-	}()
-	if err := claimLeaseTargetForRepoConfig(leaseID, serverSlug(server), cfg, server, target, repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
 		return recordFailure(err)
 	}
 	if !useCoordinator && leaseID != "" {
-		if touched, touchErr := sshBackend.Touch(ctx, TouchRequest{Lease: LeaseTarget{Server: server, SSH: target, LeaseID: leaseID}, State: blank(server.Labels["state"], "ready"), IdleTimeout: cfg.IdleTimeout}); touchErr == nil {
-			server = touched
-		} else {
-			fmt.Fprintf(a.Stderr, "warning: direct touch failed for %s: %v\n", leaseID, touchErr)
-		}
+		server = a.touchDirectLeaseBestEffort(ctx, cfg, server, blank(server.Labels["state"], "ready"))
 	}
-	if envHelperName != "" {
-		// Reject target-specific helper gaps before SSH wait or sync mutates the remote.
-		if err := validateRunEnvHelperTarget(target, runEnvHelperPath(envHelperName)); err != nil {
-			return recordFailure(err)
-		}
-	}
-	var stopHeartbeat func()
-	stopRunHeartbeat := func() {
-		if stopHeartbeat == nil {
-			return
-		}
-		stopHeartbeat()
-		stopHeartbeat = nil
-	}
-	defer stopRunHeartbeat()
-	startRunHeartbeat := func(updateIdleTimeout *time.Duration) {
-		stopRunHeartbeat()
-		stopHeartbeat = startCoordinatorHeartbeat(ctx, coord, leaseID, cfg.IdleTimeout, updateIdleTimeout, leaseTelemetryCollectorForTarget(target), a.Stderr)
+	if acquired {
+		defer func() {
+			if !*keep {
+				a.releaseAcquiredLeaseBestEffort(context.Background(), cfg, coord, useCoordinator, server, target, leaseID)
+				recorder.Event("lease.released", "released", "")
+			}
+		}()
 	}
 	if useCoordinator && leaseID != "" {
 		var heartbeatIdleTimeout *time.Duration
@@ -601,23 +304,19 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 				return recordFailure(err)
 			}
 		}
-		startRunHeartbeat(heartbeatIdleTimeout)
+		stopHeartbeat := startCoordinatorHeartbeat(ctx, coord, leaseID, cfg.IdleTimeout, heartbeatIdleTimeout, a.Stderr)
+		defer stopHeartbeat()
 	}
 
 	if cfg.Sync.BaseRef == "" {
 		cfg.Sync.BaseRef = repo.BaseRef
 	}
 	timings := runTimings{started: time.Now()}
-	exitNodeEgressChecked := false
-	workdir := remoteJoin(cfg, leaseID, repo.Name)
+	workdir := filepath.ToSlash(filepath.Join(cfg.WorkRoot, leaseID, repo.Name))
 	actionsEnvFile := ""
-	profileEnvFile := ""
 	actionsURL := ""
 	hydratedByActions := false
-	autoHydrateActions := shouldAutoHydrateActions(cfg, *noHydrate, *noSync, freshPR, *syncOnly)
-	if !freshPR.Empty() {
-		workdir = remoteJoin(cfg, leaseID, freshPR.WorkdirName())
-	} else if state, err := readActionsHydrationState(ctx, target, leaseID); err == nil && state.Workspace != "" {
+	if state, err := readActionsHydrationState(ctx, target, leaseID); err == nil && state.Workspace != "" {
 		workdir = state.Workspace
 		actionsEnvFile = state.EnvFile
 		if state.RunID != "" {
@@ -626,271 +325,27 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 			}
 		}
 		hydratedByActions = true
-		fmt.Fprintf(a.Stderr, "using Actions workspace %s\n", workdir)
-	} else if commandNeedsHydrationHint(command, *shellMode) && cfg.Actions.Workflow != "" && !autoHydrateActions {
-		fmt.Fprintf(a.Stderr, "warning: no Actions hydration marker found for %s; JS package commands may fail on a raw box. Run \"crabbox actions hydrate --id %s\" first, omit --no-hydrate, or include runtime setup in the command.\n", leaseID, leaseID)
+		fmt.Fprintf(a.Stderr, "using GitHub Actions workspace %s\n", workdir)
+	} else if commandNeedsHydrationHint(command, *shellMode) && cfg.Actions.Workflow != "" {
+		fmt.Fprintf(a.Stderr, "warning: no GitHub Actions hydration marker found for %s; JS package commands may fail on a raw box. Run \"crabbox actions hydrate --id %s\" first, or include runtime setup in the command.\n", leaseID, leaseID)
 	}
-	contextPrinted := false
-	preflightPrinted := false
-	rawJSRuntimePreflightDone := false
-	printContext := func(currentTarget SSHTarget) {
-		if contextPrinted {
-			return
-		}
-		printRunContextSummary(a.Stderr, coord, cfg, server, currentTarget, leaseID, workdir, hydratedByActions, actionsURL, recorder)
-		contextPrinted = true
-	}
-	printPreflight := func(currentTarget SSHTarget) {
-		if !*preflight || preflightPrinted {
-			return
-		}
-		hydrateTarget := currentTarget
-		if hydrateTarget.TargetOS == "" {
-			hydrateTarget.TargetOS = cfg.TargetOS
-		}
-		if hydrateTarget.WindowsMode == "" {
-			hydrateTarget.WindowsMode = cfg.WindowsMode
-		}
-		hydrateSupported := supportsLocalActionsHydrateTarget(hydrateTarget) || supportsGitHubActionsRunnerTarget(hydrateTarget)
-		printRemoteCapabilityPreflight(ctx, a.Stderr, cfg, currentTarget, leaseID, workdir, remoteRunEnvFiles(actionsEnvFile, profileEnvFile), hydratedByActions, actionsURL, hydrateSupported, envSelection.Inline)
-		preflightPrinted = true
-	}
-	preflightRawJSRuntime := func(currentTarget SSHTarget) error {
-		if rawJSRuntimePreflightDone {
-			return nil
-		}
-		if hydratedByActions || script != nil || *syncOnly {
-			rawJSRuntimePreflightDone = true
-			return nil
-		}
-		if runEnvProvidesPath(envSelection.Effective, currentTarget) {
-			rawJSRuntimePreflightDone = true
-			return nil
-		}
-		tools := commandRuntimePreflightTools(command, *shellMode)
-		if len(tools) == 0 {
-			rawJSRuntimePreflightDone = true
-			return nil
-		}
-		hydrateTarget := currentTarget
-		if hydrateTarget.TargetOS == "" {
-			hydrateTarget.TargetOS = cfg.TargetOS
-		}
-		if hydrateTarget.WindowsMode == "" {
-			hydrateTarget.WindowsMode = cfg.WindowsMode
-		}
-		if autoHydrateActions && supportsLocalActionsHydrateTarget(hydrateTarget) {
-			rawJSRuntimePreflightDone = true
-			return nil
-		}
-		missing, err := probeMissingRemoteTools(ctx, currentTarget, tools)
-		if err != nil {
-			return exit(5, "remote JS runtime preflight failed before sync: %v", err)
-		}
-		if len(missing) == 0 {
-			rawJSRuntimePreflightDone = true
-			return nil
-		}
-		if *keepOnFailure {
-			if acquired && !*keep {
-				keepFailedLease = true
-			}
-			printKeepOnFailureSSHHint(a.Stderr, cfg, leaseID, server, currentTarget)
-		}
-		suggestion := rawJSRuntimeHydrateSuggestion(cfg, hydrateTarget, leaseID, acquired, *keep, *keepOnFailure)
-		return rawJSRuntimeMissingError(cfg, missing, command, *shellMode, suggestion)
-	}
-	autoHydrateActionsIfNeeded := func(currentTarget SSHTarget) error {
-		if !autoHydrateActions || hydratedByActions {
-			return nil
-		}
-		hydrateTarget := currentTarget
-		if hydrateTarget.TargetOS == "" {
-			hydrateTarget.TargetOS = cfg.TargetOS
-		}
-		if hydrateTarget.WindowsMode == "" {
-			hydrateTarget.WindowsMode = cfg.WindowsMode
-		}
-		if !supportsLocalActionsHydrateTarget(hydrateTarget) {
-			return nil
-		}
-		fields := actionsHydrateFields(leaseID, githubActionsLeaseLabel(leaseID), cfg.Actions.Job, 0, cfg.Actions.Fields)
-		recorder.Event("actions.hydrate.started", "hydrate", cfg.Actions.Workflow)
-		state, err := a.hydrateActionsLocally(ctx, cfg, repo, currentTarget, leaseID, cfg.Actions.Job, fields, 20*time.Minute, false, false)
-		if err != nil {
-			recorder.Event("actions.hydrate.failed", "hydrate", err.Error())
-			return err
-		}
-		workdir = state.Workspace
-		actionsEnvFile = state.EnvFile
-		actionsURL = ""
-		hydratedByActions = true
-		rawJSRuntimePreflightDone = true
-		recorder.Event("actions.hydrate.finished", "hydrate", workdir)
-		fmt.Fprintf(a.Stderr, "using local Actions workspace %s\n", workdir)
-		return nil
-	}
-	beforeCommandLeaseReplacementAttempted := false
-	replaceLeaseAfterBeforeCommandSSHFailure := func(waitErr error) (bool, error) {
-		if beforeCommandLeaseReplacementAttempted ||
-			!shouldReplaceLeaseAfterBeforeCommandSSHFailure(waitErr, acquired, useCoordinator, *leaseIDFlag != "", *keep, *keepOnFailure, *noSync, *syncOnly, *stopAfter, requestedSlug) {
-			return false, nil
-		}
-		beforeCommandLeaseReplacementAttempted = true
-		oldLease := LeaseTarget{Server: server, SSH: target, LeaseID: leaseID, Coordinator: coord}
-		oldLeaseID := leaseID
-		oldSlug := serverSlug(server)
-		fmt.Fprintf(a.Stderr, "warning: SSH became unavailable after sync on lease=%s slug=%s; replacing lease once and retrying sync\n", oldLeaseID, blank(oldSlug, "-"))
-		recorder.Event("lease.replace.started", "leasing", fmt.Sprintf("old_lease=%s old_slug=%s reason=ssh_before_command", oldLeaseID, blank(oldSlug, "-")))
-
-		stopRunHeartbeat()
-		recorder.resetTelemetryForLeaseReplacement()
-		releaseApp := a
-		if *timingJSON {
-			releaseApp.Stderr = io.Discard
-		}
-		if err := releaseApp.releaseBackendLeaseBestEffort(context.Background(), sshBackend, oldLease); err != nil {
-			recorder.Event("lease.replace.failed", "leasing", err.Error())
-			return true, exit(7, "replace stale lease %s: release failed: %v", oldLeaseID, err)
-		}
-		acquired = false
-
-		newLease, err := sshBackend.Acquire(ctx, AcquireRequest{Repo: repo, Options: options, Keep: *keep, Reclaim: *reclaim})
-		if err != nil {
-			recorder.Event("lease.replace.failed", "leasing", err.Error())
-			return true, err
-		}
-
-		server, target, leaseID = newLease.Server, newLease.SSH, newLease.LeaseID
-		acquired = true
-		coord = newLease.Coordinator
-		useCoordinator = coord != nil
-		applyResolvedServerConfig(&cfg, server)
-		if err := enforceManagedLeaseCapabilities(cfg, server, leaseID); err != nil {
-			return true, err
-		}
-		if err := validateRunArtifactGlobTarget(target, expansion.ArtifactGlobs); err != nil {
-			return true, err
-		}
-		if expansion.Profile.Doctor.Enabled && isWindowsNativeTarget(target) {
-			return true, exit(2, "profile doctor is not supported for native Windows targets")
-		}
-		if useCoordinator {
-			recorder.AttachLease(leaseID, serverSlug(server), cfg)
-			startRunHeartbeat(nil)
-		}
-		if err := claimLeaseTargetForRepoConfig(leaseID, serverSlug(server), cfg, server, target, repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
-			return true, err
-		}
-		workdir = remoteJoin(cfg, leaseID, repo.Name)
-		if !freshPR.Empty() {
-			workdir = remoteJoin(cfg, leaseID, freshPR.WorkdirName())
-		}
-		actionsEnvFile = ""
-		profileEnvFile = ""
-		actionsURL = ""
-		hydratedByActions = false
-		contextPrinted = false
-		preflightPrinted = false
-		rawJSRuntimePreflightDone = false
-		exitNodeEgressChecked = false
-		timings.sync = 0
-		timings.syncSteps = syncStepTimings{}
-		timings.syncSkipped = false
-		fmt.Fprintf(a.Stderr, "retrying sync on replacement lease=%s slug=%s\n", leaseID, blank(serverSlug(server), "-"))
-		recorder.Event("lease.replace.finished", "leasing", fmt.Sprintf("lease=%s slug=%s", leaseID, blank(serverSlug(server), "-")))
-		return true, nil
-	}
-retrySync:
 	if !*noSync {
 		syncStart := time.Now()
-		if freshPR.Empty() {
-			fmt.Fprintf(a.Stderr, "syncing %s -> %s:%s\n", repo.Root, target.Host, workdir)
-		} else {
-			fmt.Fprintf(a.Stderr, "fresh-pr checkout %s -> %s:%s\n", freshPR.Slug(), target.Host, workdir)
-		}
+		fmt.Fprintf(a.Stderr, "syncing %s -> %s:%s\n", repo.Root, target.Host, workdir)
 		stepStart := time.Now()
 		recorder.Event("bootstrap.waiting", "bootstrap", "waiting for SSH before sync")
-		target = bootstrapNetworkTarget(cfg, server, target)
 		if err := waitForSSHReady(ctx, &target, a.Stderr, "before sync", 2*time.Minute); err != nil {
 			return recordFailure(err)
 		}
-		a.refreshTailscaleMetadata(ctx, cfg, coord, useCoordinator, &server, target, leaseID)
-		_ = updateLeaseClaimEndpoint(leaseID, server, target)
-		if resolved, err := resolveNetworkTarget(ctx, cfg, server, target); err != nil {
-			return recordFailure(err)
-		} else {
-			target = resolved.Target
-			_ = updateLeaseClaimEndpoint(leaseID, server, target)
-			if resolved.FallbackReason != "" {
-				fmt.Fprintf(a.Stderr, "network fallback %s\n", resolved.FallbackReason)
-			}
-		}
-		printContext(target)
-		if !exitNodeEgressChecked {
-			if err := validateTailscaleExitNodeEgress(ctx, server, target); err != nil {
-				return recordFailure(err)
-			}
-			exitNodeEgressChecked = true
-		}
-		if err := preflightRawJSRuntime(target); err != nil {
-			return recordFailure(err)
-		}
-		recorder.CaptureTelemetryStart(ctx, target)
-		recorder.StartTelemetrySampler(ctx, target)
 		recorder.Event("sync.started", "sync", "")
 		timings.syncSteps.sshReady = time.Since(stepStart)
-		if !freshPR.Empty() {
-			stepStart = time.Now()
-			checkoutCommand := remoteFreshPRCheckoutCommandForTarget(workdir, freshPR, target)
-			out, err := runSSHCombinedOutput(ctx, target, checkoutCommand)
-			if err != nil && isWindowsNativeTarget(target) {
-				fmt.Fprintf(a.Stderr, "warning: fresh-pr checkout SSH failed on native Windows; refreshing SSH port and retrying once: %v\n", err)
-				target.Port = cfg.SSHPort
-				target.FallbackPorts = cfg.SSHFallbackPorts
-				target = bootstrapNetworkTarget(cfg, server, target)
-				if waitErr := waitForSSHReady(ctx, &target, a.Stderr, "before sync", 2*time.Minute); waitErr != nil {
-					return recordFailure(waitErr)
-				}
-				if resolved, resolveErr := resolveNetworkTarget(ctx, cfg, server, target); resolveErr != nil {
-					return recordFailure(resolveErr)
-				} else {
-					target = resolved.Target
-					if resolved.FallbackReason != "" {
-						fmt.Fprintf(a.Stderr, "network fallback %s\n", resolved.FallbackReason)
-					}
-				}
-				checkoutCommand = remoteFreshPRCheckoutCommandForTarget(workdir, freshPR, target)
-				out, err = runSSHCombinedOutput(ctx, target, checkoutCommand)
-			}
-			if err != nil {
-				return recordFailure(exit(6, "fresh-pr checkout failed: %v: %s", err, strings.TrimSpace(out)))
-			}
-			timings.syncSteps.gitSeed = time.Since(stepStart)
-			if *applyLocalPatch {
-				stepStart = time.Now()
-				applied, err := applyLocalPatchToFreshPR(ctx, target, workdir, repo)
-				if err != nil {
-					return recordFailure(err)
-				}
-				timings.syncSteps.finalize = time.Since(stepStart)
-				if applied {
-					fmt.Fprintln(a.Stderr, "fresh-pr local_patch=applied")
-				} else {
-					fmt.Fprintln(a.Stderr, "fresh-pr local_patch=none")
-				}
-			}
-			timings.sync = time.Since(syncStart)
-			fmt.Fprintf(a.Stderr, "fresh-pr checkout complete in %s\n", timings.sync.Round(time.Millisecond))
-			recorder.Event("sync.finished", "synced", fmt.Sprintf("duration=%s fresh_pr=%s", timings.sync.Round(time.Millisecond), freshPR.Slug()))
-			goto afterSync
-		}
-		excludes, err := syncExcludes(repo.Root, cfg)
-		if err != nil {
-			return recordFailure(err)
-		}
 		stepStart = time.Now()
-		manifest, err := syncManifest(repo.Root, excludes)
+		if err := runSSHQuiet(ctx, target, remoteMkdir(workdir)); err != nil {
+			return recordFailure(exit(7, "create remote workdir: %v", err))
+		}
+		timings.syncSteps.mkdir = time.Since(stepStart)
+		stepStart = time.Now()
+		manifest, err := syncManifest(repo.Root, configuredExcludes(cfg))
 		if err != nil {
 			return recordFailure(exit(6, "build sync file list: %v", err))
 		}
@@ -901,13 +356,13 @@ retrySync:
 		}
 		timings.syncSteps.preflight = time.Since(stepStart)
 		fingerprint := ""
-		if cfg.Sync.Fingerprint && !isWindowsNativeTarget(target) {
+		if cfg.Sync.Fingerprint {
 			stepStart = time.Now()
-			fingerprint, err = syncFingerprintForManifest(repo, cfg, manifest, excludes)
+			fingerprint, err = syncFingerprintForManifest(repo, cfg, manifest)
 			timings.syncSteps.fingerprintLocal = time.Since(stepStart)
 			if err != nil {
 				fmt.Fprintf(a.Stderr, "warning: sync fingerprint failed: %v\n", err)
-			} else if !fullResyncRequested && fingerprint != "" {
+			} else if fingerprint != "" {
 				stepStart = time.Now()
 				remoteFingerprint, err := runSSHOutput(ctx, target, remoteReadSyncFingerprint(workdir))
 				timings.syncSteps.fingerprintRemote = time.Since(stepStart)
@@ -920,36 +375,7 @@ retrySync:
 				}
 			}
 		}
-		if fullResyncRequested {
-			stepStart = time.Now()
-			fmt.Fprintf(a.Stderr, "full-resync resetting remote workdir %s\n", workdir)
-			resetCommand := remoteResetWorkdir(workdir)
-			if isWindowsNativeTarget(target) {
-				resetCommand = windowsRemoteResetWorkdir(workdir)
-			}
-			if err := runSSHQuiet(ctx, target, resetCommand); err != nil {
-				return recordFailure(exit(7, "reset remote workdir: %v", err))
-			}
-			timings.syncSteps.reset = time.Since(stepStart)
-		} else if isWindowsNativeTarget(target) {
-			stepStart = time.Now()
-			if err := runSSHQuiet(ctx, target, windowsRemoteMkdir(workdir)); err != nil {
-				return recordFailure(exit(7, "create remote workdir: %v", err))
-			}
-			timings.syncSteps.mkdir = time.Since(stepStart)
-		}
-		if isWindowsNativeTarget(target) {
-			stepStart = time.Now()
-			if err := syncWindowsNative(ctx, target, repo, cfg, workdir, manifest, a.Stdout, a.Stderr, rsyncOptions{Debug: *debugSync, Delete: cfg.Sync.Delete, Checksum: cfg.Sync.Checksum, FullResync: fullResyncRequested, Timeout: cfg.Sync.Timeout, HeartbeatInterval: 15 * time.Second}); err != nil {
-				return recordFailure(err)
-			}
-			timings.syncSteps.rsync = time.Since(stepStart)
-			timings.sync = time.Since(syncStart)
-			fmt.Fprintf(a.Stderr, "sync complete in %s\n", timings.sync.Round(time.Millisecond))
-			recorder.Event("sync.finished", "synced", fmt.Sprintf("duration=%s mode=archive", timings.sync.Round(time.Millisecond)))
-			goto afterSync
-		}
-		if cfg.Sync.GitSeed && remoteGitSeedCandidate(repo) {
+		if cfg.Sync.GitSeed {
 			stepStart = time.Now()
 			if err := runSSHQuiet(ctx, target, remoteGitSeed(workdir, repo.RemoteURL, repo.Head)); err != nil {
 				fmt.Fprintf(a.Stderr, "warning: remote git seed failed: %v\n", err)
@@ -958,19 +384,14 @@ retrySync:
 		}
 		manifestData := manifest.NUL()
 		stepStart = time.Now()
-		manifestInput := fmt.Sprintf("%d\n", len(manifestData)) + string(manifestData) + string(manifest.DeletedNUL())
-		if err := runSSHInputQuiet(ctx, target, remoteWriteSyncManifestsNew(workdir), manifestInput); err != nil {
-			return recordFailure(exit(7, "write sync manifests: %v", err))
+		if err := runSSHInputQuiet(ctx, target, remoteWriteSyncManifestNew(workdir), string(manifestData)); err != nil {
+			return recordFailure(exit(7, "write sync manifest: %v", err))
+		}
+		if err := runSSHInputQuiet(ctx, target, remoteWriteSyncDeletedNew(workdir), string(manifest.DeletedNUL())); err != nil {
+			return recordFailure(exit(7, "write sync delete manifest: %v", err))
 		}
 		timings.syncSteps.manifestWrite = time.Since(stepStart)
-		if shouldPruneRemoteSync(cfg.Sync.Delete, fullResyncRequested) {
-			// Full resync can git-seed files that are absent from the local manifest.
-			// Seed the old manifest from git so prune removes those resurrected paths.
-			if shouldSeedRemotePruneManifest(hydratedByActions, fullResyncRequested) {
-				if err := runSSHQuiet(ctx, target, remoteSeedSyncManifestFromGit(workdir)); err != nil {
-					return recordFailure(exit(6, "remote sync seed manifest failed: %v", err))
-				}
-			}
+		if cfg.Sync.Delete {
 			stepStart = time.Now()
 			if err := runSSHQuiet(ctx, target, remotePruneSyncManifest(workdir)); err != nil {
 				return recordFailure(exit(6, "remote sync prune failed: %v", err))
@@ -978,423 +399,126 @@ retrySync:
 			timings.syncSteps.prune = time.Since(stepStart)
 		}
 		stepStart = time.Now()
-		if err := rsync(ctx, target, repo.Root, workdir, excludes, a.Stdout, a.Stderr, rsyncOptions{Debug: *debugSync, Delete: cfg.Sync.Delete, Checksum: cfg.Sync.Checksum, UseFilesFrom: true, FilesFrom: manifestData, NoTimes: localContainerDockerSocketSync(cfg, server), Timeout: cfg.Sync.Timeout, HeartbeatInterval: 15 * time.Second}); err != nil {
+		if err := rsync(ctx, target, repo.Root, workdir, configuredExcludes(cfg), a.Stdout, a.Stderr, rsyncOptions{Debug: *debugSync, Delete: cfg.Sync.Delete, Checksum: cfg.Sync.Checksum, UseFilesFrom: true, FilesFrom: manifestData, Timeout: cfg.Sync.Timeout, HeartbeatInterval: 15 * time.Second}); err != nil {
 			return recordFailure(exit(6, "rsync failed: %v", err))
 		}
 		timings.syncSteps.rsync = time.Since(stepStart)
+		stepStart = time.Now()
+		if err := runSSHQuiet(ctx, target, remoteApplySyncManifest(workdir)); err != nil {
+			return recordFailure(exit(6, "remote sync manifest apply failed: %v", err))
+		}
+		timings.syncSteps.manifestApply = time.Since(stepStart)
+		stepStart = time.Now()
+		if out, err := runSSHCombinedOutput(ctx, target, remoteSyncSanity(workdir, os.Getenv("CRABBOX_ALLOW_MASS_DELETIONS") == "1")); err != nil {
+			if out != "" {
+				return recordFailure(exit(6, "remote sync sanity failed: %s: %v", out, err))
+			}
+			return recordFailure(exit(6, "remote sync sanity failed: %v", err))
+		}
+		timings.syncSteps.sanity = time.Since(stepStart)
 		baseSHA := gitHydrateBaseSHA(repo, cfg.Sync.BaseRef)
-		hydrateGit := true
 		if hydratedByActions {
+			stepStart = time.Now()
 			reason, err := runSSHOutput(ctx, target, remoteGitHydrateStatus(workdir, cfg.Sync.BaseRef, baseSHA))
 			if err == nil && reason != "" {
 				timings.syncSteps.gitHydrateSkipped = true
 				timings.syncSteps.gitHydrateSkipReason = reason
-				hydrateGit = false
 				fmt.Fprintf(a.Stderr, "skipping git hydrate: %s\n", reason)
 			}
 		}
-		stepStart = time.Now()
-		finalizeCommand := remoteFinalizeSync(workdir, remoteSyncFinalizeOptions{
-			AllowMassDeletions: hydratedByActions || os.Getenv("CRABBOX_ALLOW_MASS_DELETIONS") == "1",
-			HydrateGit:         hydrateGit,
-			BaseRef:            cfg.Sync.BaseRef,
-			BaseSHA:            baseSHA,
-			Fingerprint:        fingerprint,
-		})
-		if out, err := runSSHCombinedOutput(ctx, target, finalizeCommand); err != nil {
-			if out != "" {
-				return recordFailure(exit(6, "remote sync finalize failed: %s: %v", out, err))
+		if !timings.syncSteps.gitHydrateSkipped {
+			stepStart = time.Now()
+			if err := runSSHQuiet(ctx, target, remoteGitHydrate(workdir, cfg.Sync.BaseRef)); err != nil {
+				fmt.Fprintf(a.Stderr, "warning: remote git hydrate failed: %v\n", err)
 			}
-			return recordFailure(exit(6, "remote sync finalize failed: %v", err))
+			timings.syncSteps.gitHydrate = time.Since(stepStart)
 		}
-		timings.syncSteps.finalize = time.Since(stepStart)
+		if cfg.Sync.BaseRef != "" && baseSHA != "" {
+			stepStart = time.Now()
+			if err := runSSHQuiet(ctx, target, remoteWriteGitHydrateMarker(workdir, cfg.Sync.BaseRef, baseSHA)); err != nil {
+				fmt.Fprintf(a.Stderr, "warning: write git hydrate marker failed: %v\n", err)
+			}
+		}
+		if fingerprint != "" {
+			stepStart = time.Now()
+			if err := runSSHQuiet(ctx, target, remoteWriteSyncFingerprint(workdir, fingerprint)); err != nil {
+				fmt.Fprintf(a.Stderr, "warning: write sync fingerprint failed: %v\n", err)
+			}
+			timings.syncSteps.fingerprintWrite = time.Since(stepStart)
+		}
 		timings.sync = time.Since(syncStart)
 		fmt.Fprintf(a.Stderr, "sync complete in %s\n", timings.sync.Round(time.Millisecond))
 		recorder.Event("sync.finished", "synced", fmt.Sprintf("duration=%s skipped=false", timings.sync.Round(time.Millisecond)))
 	} else {
-		timings.syncSkipped = true
 		recorder.Event("sync.finished", "synced", "skipped by --no-sync")
 	}
 afterSync:
-	if !*noSync {
-		if err := autoHydrateActionsIfNeeded(target); err != nil {
-			return recordFailure(err)
-		}
-	}
 	if *syncOnly {
-		printPreflight(target)
 		fmt.Fprintf(a.Stdout, "synced %s\n", workdir)
 		fmt.Fprintln(a.Stderr, formatRunSummary(timings, time.Since(timings.started), 0))
 		if *timingJSON {
 			total := time.Since(timings.started)
-			report := timingReportFromRunWithActionsURL(cfg.Provider, leaseID, serverSlug(server), timings, total, 0, actionsURL)
-			populateRunTimingMetadata(&report, cfg, repo, server, leaseID, recorder.runID, workdir, nil)
-			report.Label = runLabelValue
-			finalTimingReport = &report
+			if err := writeTimingJSON(a.Stderr, timingReportFromRunWithActionsURL(cfg.Provider, leaseID, serverSlug(server), timings, total, 0, actionsURL)); err != nil {
+				return recordFailure(err)
+			}
 		}
-		recorder.Finish(ctx, target, 0, timings.sync, 0, "", false, nil, FailureClassification{})
+		recorder.Finish(0, timings.sync, 0, "", false, nil)
 		return nil
 	}
 
 	commandStart := time.Now()
 	recorder.Event("bootstrap.waiting", "bootstrap", "waiting for SSH before command")
-	target = bootstrapNetworkTarget(cfg, server, target)
 	if err := waitForSSHReady(ctx, &target, a.Stderr, "before command", 2*time.Minute); err != nil {
-		replaced, replaceErr := replaceLeaseAfterBeforeCommandSSHFailure(err)
-		if replaceErr != nil {
-			return recordFailure(replaceErr)
-		}
-		if replaced {
-			goto retrySync
-		}
 		return recordFailure(err)
 	}
-	a.refreshTailscaleMetadata(ctx, cfg, coord, useCoordinator, &server, target, leaseID)
-	_ = updateLeaseClaimEndpoint(leaseID, server, target)
-	if resolved, err := resolveNetworkTarget(ctx, cfg, server, target); err != nil {
-		return recordFailure(err)
-	} else {
-		target = resolved.Target
-		_ = updateLeaseClaimEndpoint(leaseID, server, target)
-		if resolved.FallbackReason != "" {
-			fmt.Fprintf(a.Stderr, "network fallback %s\n", resolved.FallbackReason)
-		}
-	}
-	printContext(target)
-	if !exitNodeEgressChecked {
-		if err := validateTailscaleExitNodeEgress(ctx, server, target); err != nil {
-			return recordFailure(err)
-		}
-		exitNodeEgressChecked = true
-	}
-	recorder.CaptureTelemetryStart(ctx, target)
-	recorder.StartTelemetrySampler(ctx, target)
 	if *noSync {
-		mkdirCommand := remoteMkdir(workdir)
-		if isWindowsNativeTarget(target) {
-			mkdirCommand = windowsRemoteMkdir(workdir)
-		}
-		if err := runSSHQuiet(ctx, target, mkdirCommand); err != nil {
+		if err := runSSHQuiet(ctx, target, remoteMkdir(workdir)); err != nil {
 			return recordFailure(exit(7, "create remote workdir: %v", err))
 		}
 	}
-	if err := preflightRawJSRuntime(target); err != nil {
-		return recordFailure(err)
-	}
-	if len(envSelection.Profile) > 0 {
-		profileEnvFile = runEnvProfilePath(firstNonBlank(recorder.runID, leaseID, "run"))
-		envHelperPath := ""
-		if envHelperName != "" {
-			safeName, _ := safeEnvHelperName(envHelperName)
-			profileEnvFile = runEnvProfilePath(safeName)
-			envHelperPath = runEnvHelperPath(safeName)
-		}
-		if err := validateRunEnvHelperTarget(target, envHelperPath); err != nil {
-			return recordFailure(err)
-		}
-		if err := uploadRunEnvProfile(ctx, target, workdir, profileEnvFile, envSelection.Profile); err != nil {
-			return recordFailure(err)
-		}
-		persistEnvProfile := false
-		defer func() {
-			// Helper mode intentionally keeps the profile; all failure paths clean it up.
-			if persistEnvProfile {
-				return
-			}
-			if out, cleanupErr := runSSHCombinedOutput(context.Background(), target, removeRunEnvProfileCommand(target, workdir, profileEnvFile)); cleanupErr != nil {
-				fmt.Fprintf(a.Stderr, "warning: remote env profile cleanup failed: %v: %s\n", cleanupErr, strings.TrimSpace(out))
-			}
-		}()
-		if err := probeRunEnvProfile(ctx, target, workdir, profileEnvFile, envSelection.Profile, a.Stderr); err != nil {
-			return recordFailure(err)
-		}
-		if envHelperPath != "" {
-			if err := uploadRunEnvHelper(ctx, target, workdir, envHelperPath, profileEnvFile); err != nil {
-				return recordFailure(err)
-			}
-			persistEnvProfile = true
-			fmt.Fprintf(a.Stderr, "env helper remote=%s usage=%s\n", envHelperPath, shellQuote("./"+envHelperPath+" <command>"))
-		}
-	}
-	printPreflight(target)
-	if expansion.Profile.Doctor.Enabled {
-		fmt.Fprintf(a.Stderr, "profile doctor profile=%s\n", cfg.Profile)
-		out, err := runSSHCombinedOutput(ctx, target, remoteProfileDoctorCommand(cfg.Profile, expansion.Profile.Doctor, workdir))
-		if strings.TrimSpace(out) != "" {
-			fmt.Fprintln(a.Stderr, strings.TrimSpace(out))
-		}
-		if err != nil {
-			failure := exit(7, "profile doctor failed for %s: image_prereq_missing", cfg.Profile)
-			if shouldReleaseRunLease(acquired, *keep, keepFailedLease, *stopAfter, failure) {
-				return recordFailure(exit(7, "%s; fix the profile image prerequisites, then rerun the command; use --keep or --stop-after never to inspect the failed lease", failure.Error()))
-			}
-			return recordFailure(exit(7, "%s; rerun crabbox doctor --profile %s --id %s", failure.Error(), cfg.Profile, firstNonBlank(serverSlug(server), leaseID)))
-		}
-	}
 	if !useCoordinator {
-		if touched, touchErr := sshBackend.Touch(context.Background(), TouchRequest{Lease: LeaseTarget{Server: server, SSH: target, LeaseID: leaseID}, State: "running", IdleTimeout: cfg.IdleTimeout}); touchErr == nil {
-			server = touched
-		} else {
-			fmt.Fprintf(a.Stderr, "warning: direct touch state=running: %v\n", touchErr)
-		}
+		server = a.touchDirectLeaseBestEffort(context.Background(), cfg, server, "running")
 		defer func() {
-			if touched, touchErr := sshBackend.Touch(context.Background(), TouchRequest{Lease: LeaseTarget{Server: server, SSH: target, LeaseID: leaseID}, State: "ready", IdleTimeout: cfg.IdleTimeout}); touchErr == nil {
-				server = touched
-			} else {
-				fmt.Fprintf(a.Stderr, "warning: direct touch state=ready: %v\n", touchErr)
-			}
+			server = a.touchDirectLeaseBestEffort(context.Background(), cfg, server, "ready")
 		}()
 	}
-	commandDisplay := runCommandDisplayWithLiteralArgs(command, *shellMode, expansion.LiteralArgs)
-	if script != nil {
-		script = runScriptForTarget(script, target)
-		if err := uploadRunScript(ctx, target, workdir, script); err != nil {
-			return recordFailure(err)
-		}
-		fmt.Fprintf(a.Stderr, "uploaded script %s -> %s\n", script.Source, script.RemotePath)
-		recorder.Event("script.uploaded", "script", script.RemotePath)
-		commandDisplay = runScriptDisplay(script, command)
-	}
-	fmt.Fprintf(a.Stderr, "running on %s %s\n", target.Host, commandDisplay)
-	recorder.Event("command.started", "command", commandDisplay)
-	capabilityEnv, err := requestedCapabilityEnv(ctx, cfg, target)
-	if err != nil {
-		return recordFailure(err)
-	}
-	if envSelection.SummaryRequested {
-		printEnvForwardingSummary(a.Stderr, cfg.Provider, "forwarded", cfg.EnvAllow, envSelection.Effective)
-	} else {
-		maybePrintEnvForwardingSummary(a.Stderr, cfg.Provider, "forwarded", cfg.EnvAllow, envSelection.Effective)
-	}
-	runEnv := mergeEnv(envSelection.Inline, capabilityEnv)
-	envFiles := remoteRunEnvFiles(actionsEnvFile, profileEnvFile)
-	useShell := shouldUseShellWithLiteralArgs(command, expansion.LiteralArgs)
-	remote := remoteCommandWithEnvFiles(workdir, runEnv, envFiles, command)
-	if script != nil {
-		remote = remoteRunScriptCommandWithEnvFiles(workdir, runEnv, envFiles, script, command)
-	} else if *shellMode {
-		remote = remoteShellCommandWithEnvFiles(workdir, runEnv, envFiles, strings.Join(command, " "))
-	} else if useShell {
-		remote = remoteShellCommandWithEnvFiles(workdir, runEnv, envFiles, runCommandShellStringWithLiteralArgs(command, false, expansion.LiteralArgs))
-	}
-	if isWindowsNativeTarget(target) {
-		remote = windowsRemoteCommandWithEnvFiles(workdir, runEnv, envFiles, command)
-		if script != nil {
-			remote = windowsRemoteRunScriptCommandWithEnvFiles(workdir, runEnv, envFiles, script, command)
-		} else if *shellMode {
-			remote = windowsRemoteShellCommandWithEnvFiles(workdir, runEnv, envFiles, strings.Join(command, " "))
-		} else if useShell {
-			remote = windowsRemoteShellCommandWithEnvFiles(workdir, runEnv, envFiles, runCommandShellStringWithLiteralArgs(command, false, expansion.LiteralArgs))
-		}
+	fmt.Fprintf(a.Stderr, "running on %s %s\n", target.Host, strings.Join(command, " "))
+	recorder.Event("command.started", "command", strings.Join(command, " "))
+	remote := remoteCommandWithEnvFile(workdir, allowedEnv(cfg.EnvAllow), actionsEnvFile, command)
+	if *shellMode || shouldUseShell(command) {
+		remote = remoteShellCommandWithEnvFile(workdir, allowedEnv(cfg.EnvAllow), actionsEnvFile, strings.Join(command, " "))
 	}
 	var logBuffer runLogBuffer
 	stdoutEvents := recorder.StreamWriter("stdout")
 	stderrEvents := recorder.StreamWriter("stderr")
-	stdoutTail := newStreamTailBuffer(failureTailLines)
-	stderrTail := newStreamTailBuffer(failureTailLines)
-	streamCaptures, err := openFailureStreamCaptures(*captureStdout, *captureStderr)
-	if err != nil {
-		return recordFailure(err)
-	}
-	defer streamCaptures.cleanup()
-	phaseTracker := newCommandPhaseTracker(commandStart)
-	stdoutPhaseWriter := &phaseMarkerWriter{tracker: phaseTracker}
-	stderrPhaseWriter := &phaseMarkerWriter{tracker: phaseTracker}
-	stdout := io.MultiWriter(a.Stdout, &logBuffer, stdoutEvents, stdoutTail, stdoutPhaseWriter)
-	stderr := io.MultiWriter(a.Stderr, &logBuffer, stderrEvents, stderrTail, stderrPhaseWriter)
-	stdout, stdoutCaptured, err := streamCaptures.stdout.writer(stdout, stdoutPhaseWriter, a.Stderr)
-	if err != nil {
-		return recordFailure(err)
-	}
-	if stdoutCaptured {
-		stdoutEvents = nil
-	}
-	stderr, stderrCaptured, err := streamCaptures.stderr.writer(stderr, stderrPhaseWriter, a.Stderr)
-	if err != nil {
-		return recordFailure(err)
-	}
-	if stderrCaptured {
-		stderrEvents = nil
-	}
-	resultsMarker := ""
-	if cfg.Results.Auto {
-		resultsMarker = remoteResultsMarker
-		markerCommand := remoteTouchResultsMarker(workdir)
-		if isWindowsNativeTarget(target) {
-			markerCommand = windowsRemoteTouchResultsMarker(workdir)
-		}
-		if err := runSSHQuiet(ctx, target, markerCommand); err != nil {
-			return recordFailure(exit(7, "prepare test result freshness marker: %v", err))
-		}
-	}
-	code, streamErr := runSSHStreamResult(ctx, target, remote, stdout, stderr)
-	if err := streamCaptures.closeAfterStream(streamErr, code, a.Stderr); err != nil {
-		return recordFailure(err)
-	}
-	if !stdoutCaptured {
-		stdoutEvents.Flush()
-	}
-	if !stderrCaptured {
-		stderrEvents.Flush()
-	}
-	stdoutPhaseWriter.Flush()
-	stderrPhaseWriter.Flush()
+	stdout := io.MultiWriter(a.Stdout, &logBuffer, stdoutEvents)
+	stderr := io.MultiWriter(a.Stderr, &logBuffer, stderrEvents)
+	code := runSSHStream(ctx, target, remote, stdout, stderr)
+	stdoutEvents.Flush()
+	stderrEvents.Flush()
 	timings.command = time.Since(commandStart)
-	timings.commandPhases = phaseTracker.Finish(time.Now())
 	var results *TestResultSummary
-	if cfg.Results.Auto || len(cfg.Results.JUnit) > 0 {
-		results, err = collectRemoteJUnitResults(ctx, target, workdir, cfg.Results, resultsMarker)
+	if len(cfg.Results.JUnit) > 0 {
+		results, err = collectRemoteJUnitResults(ctx, target, workdir, cfg.Results.JUnit)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "warning: collect test results failed: %v\n", err)
 		} else if line := resultSummaryLine(results); line != "" {
 			fmt.Fprintln(a.Stderr, line)
 		}
 	}
-	if code == 0 {
-		for _, spec := range downloads {
-			bytes, local, err := downloadRemoteFile(ctx, target, workdir, spec)
-			if err != nil {
-				return recordFailure(err)
-			}
-			fmt.Fprintf(a.Stderr, "downloaded %s bytes=%d\n", local, bytes)
-		}
-	}
-	var runArtifacts []runArtifact
-	if code == 0 && len(expansion.ArtifactGlobs) > 0 {
-		collected, artifactOutput, err := collectRunArtifactGlobs(ctx, target, workdir, repo.Root, recorder.runID, leaseID, expansion.ArtifactGlobs)
-		if err != nil {
-			return recordFailure(err)
-		}
-		if strings.TrimSpace(artifactOutput) != "" {
-			fmt.Fprintln(a.Stderr, strings.TrimSpace(artifactOutput))
-		}
-		runArtifacts = append(runArtifacts, collected...)
-		for _, artifact := range collected {
-			fmt.Fprintf(a.Stderr, "artifact kind=%s path=%s bytes=%d\n", artifact.Kind, artifact.Path, artifact.Bytes)
-		}
-	}
+	recorder.Finish(code, timings.sync, timings.command, logBuffer.String(), logBuffer.Truncated(), results)
 	total := time.Since(timings.started)
-	classification := FailureClassification{}
-	if code != 0 {
-		classification = ClassifyRunFailure(code, logBuffer.String(), timings.commandPhases)
-		timings.blockedStage = classification.BlockedStage
-		timings.retryLikely = classification.RetryLikely
-		failureClassificationPrinted = true
-	}
-	report := timingReportFromRunWithActionsURL(cfg.Provider, leaseID, serverSlug(server), timings, total, code, actionsURL)
-	populateRunTimingMetadata(&report, cfg, repo, server, leaseID, recorder.runID, workdir, runArtifacts)
-	report.Label = runLabelValue
-	if strings.TrimSpace(*emitProof) != "" && code == 0 {
-		template := cfg.ProofTemplates[strings.TrimSpace(*proofTemplate)]
-		proof, err := writeRunProof(strings.TrimSpace(*emitProof), strings.TrimSpace(*proofTemplate), proofRenderInput{
-			Template:    template,
-			Provider:    cfg.Provider,
-			LeaseID:     leaseID,
-			Slug:        serverSlug(server),
-			RunID:       recorder.runID,
-			Command:     commandDisplay,
-			LogExcerpt:  selectProofLogExcerpt(logBuffer.String()),
-			ActionsURL:  actionsURL,
-			Artifacts:   runArtifacts,
-			Variables:   expansion.Variables,
-			CommandMs:   report.CommandMs,
-			ExitCode:    code,
-			GeneratedAt: time.Now(),
-		})
-		if err != nil {
-			return recordFailure(err)
-		}
-		runArtifacts = append(runArtifacts, proof)
-		report.Artifacts = runArtifacts
-		fmt.Fprintf(a.Stderr, "artifact kind=proof path=%s bytes=%d template=%s\n", proof.Path, proof.Bytes, blank(proof.Template, "default"))
-	}
-	recorder.Finish(ctx, target, code, timings.sync, timings.command, logBuffer.String(), logBuffer.Truncated(), results, classification)
 	fmt.Fprintf(a.Stderr, "command complete in %s total=%s\n", timings.command.Round(time.Millisecond), total.Round(time.Millisecond))
 	fmt.Fprintln(a.Stderr, formatRunSummary(timings, total, code))
-	labelField := ""
-	if runLabelValue != "" {
-		labelField = fmt.Sprintf(" label=%q", runLabelValue)
-	}
-	fmt.Fprintf(a.Stderr, "run details provider=%s lease=%s slug=%s run=%s%s type=%s repo=%s workdir=%s actions=%s stop_command=%q idle_timeout=%s\n", cfg.Provider, leaseID, blank(serverSlug(server), "-"), blank(recorder.runID, "-"), labelField, blank(server.ServerType.Name, "-"), repo.Root, workdir, blank(actionsURL, "-"), report.StopCommand, cfg.IdleTimeout)
 	if *timingJSON {
-		finalTimingReport = &report
+		if err := writeTimingJSON(a.Stderr, timingReportFromRunWithActionsURL(cfg.Provider, leaseID, serverSlug(server), timings, total, code, actionsURL)); err != nil {
+			return recordFailure(err)
+		}
 	}
 	if code != 0 {
-		printRunFailureDigest(a.Stderr, runFailureDigestInput{
-			Provider:       cfg.Provider,
-			TargetOS:       cfg.TargetOS,
-			WindowsMode:    cfg.WindowsMode,
-			LeaseID:        leaseID,
-			Slug:           serverSlug(server),
-			RunID:          recorder.runID,
-			CommandDisplay: commandDisplay,
-			ShellMode:      *shellMode || useShell,
-			ScriptMode:     script != nil,
-			RoutingArgs:    runFailureDigestRoutingArgs(cfg),
-			SSHRoutingArgs: runFailureDigestSSHRoutingArgs(cfg),
-			StopCommand:    report.StopCommand,
-			Classification: classification,
-			Phases:         timings.commandPhases,
-			Results:        results,
-		}, stdoutTail, stderrTail, *captureStdout, *captureStderr)
-		capture := FailureCaptureMetadata{
-			Provider:       cfg.Provider,
-			LeaseID:        leaseID,
-			Slug:           serverSlug(server),
-			RunID:          recorder.runID,
-			Workdir:        workdir,
-			ExitCode:       code,
-			ActionsRunURL:  actionsURL,
-			Timing:         report,
-			EnvAllow:       cfg.EnvAllow,
-			Env:            envSelection.Effective,
-			Config:         cfg,
-			StdoutPath:     streamCaptures.stdout.path(),
-			StderrPath:     streamCaptures.stderr.path(),
-			CaptureFlagSet: *captureOnFail,
-		}
-		if local, bytes, captureErr := captureFailureBundle(ctx, target, workdir, leaseID, recorder.runID, capture); captureErr != nil {
-			fmt.Fprintf(a.Stderr, "warning: failure bundle failed: %v\n", captureErr)
-			if local != "" {
-				fmt.Fprintf(a.Stderr, "failure-bundle local=%s bytes=%d secret_risk=caller-redacts-before-sharing\n", local, bytes)
-			}
-		} else {
-			fmt.Fprintf(a.Stderr, "failure-bundle local=%s bytes=%d secret_risk=caller-redacts-before-sharing\n", local, bytes)
-		}
-		if *keepOnFailure {
-			if acquired && !*keep {
-				keepFailedLease = true
-			}
-			printKeepOnFailureSSHHint(a.Stderr, cfg, leaseID, server, target)
-		}
-		hydrateSuggestion := rawJSRuntimeHydrateSuggestion(cfg, target, leaseID, acquired, *keep, *keepOnFailure)
-		printCommandNotFoundHint(a.Stderr, cfg, target, leaseID, command, *shellMode, code, hydratedByActions, hydrateSuggestion)
-		printFailureTail(a.Stderr, "stdout", stdoutTail, *captureStdout)
-		printFailureTail(a.Stderr, "stderr", stderrTail, *captureStderr)
 		return recordFailure(ExitError{Code: code, Message: fmt.Sprintf("remote command exited %d", code)})
 	}
 	return nil
-}
-
-func writeRunLeaseOutput(path string, session *RunSessionHandle) error {
-	if strings.TrimSpace(path) == "" {
-		return nil
-	}
-	if session == nil {
-		return exit(2, "--lease-output was requested but provider did not return a session handle")
-	}
-	return writeJSONFile(path, session)
-}
-
-type countingWriteCloser struct {
-	io.WriteCloser
-	N int64
-}
-
-func (w *countingWriteCloser) Write(p []byte) (int, error) {
-	n, err := w.WriteCloser.Write(p)
-	w.N += int64(n)
-	return n, err
 }
 
 func recordRunFailure(dst *error, failure error) error {
@@ -1404,178 +528,12 @@ func recordRunFailure(dst *error, failure error) error {
 	return failure
 }
 
-func validateRunStopAfterPolicy(policy string) error {
-	switch strings.ToLower(strings.TrimSpace(policy)) {
-	case "", "success", "always", "failure", "never":
-		return nil
-	default:
-		return exit(2, "--stop-after must be success, always, failure, or never")
-	}
-}
-
-func shouldReleaseRunLease(acquired, keep, keepFailedLease bool, stopAfter string, runFailure error) bool {
-	switch strings.ToLower(strings.TrimSpace(stopAfter)) {
-	case "never":
-		return false
-	case "always":
-		return true
-	case "success":
-		return runFailure == nil
-	case "failure":
-		return runFailure != nil
-	default:
-		return acquired && !keep && !keepFailedLease
-	}
-}
-
-func populateRunTimingMetadata(report *timingReport, cfg Config, repo Repo, server Server, leaseID, runID, workdir string, artifacts []runArtifact) {
-	report.RunID = runID
-	report.MachineType = server.ServerType.Name
-	report.RepoPath = repo.Root
-	report.Workdir = workdir
-	report.StopCommand = runStopCommand(cfg, firstNonBlank(serverSlug(server), leaseID))
-	report.IdleTimeout = cfg.IdleTimeout.String()
-	report.Artifacts = artifacts
-}
-
-func writeDelegatedRunProof(path, templateName string, cfg Config, result RunResult, req RunRequest) (runArtifact, error) {
-	template := cfg.ProofTemplates[strings.TrimSpace(templateName)]
-	provider := firstNonBlank(result.Provider, cfg.Provider)
-	leaseID := result.LeaseID
-	slug := result.Slug
-	command := strings.TrimSpace(result.CommandText)
-	if command == "" {
-		command = runCommandDisplay(req.Command, req.ShellMode)
-	}
-	logExcerpt := strings.TrimSpace(result.LogExcerpt)
-	if logExcerpt == "" {
-		logExcerpt = "(no console output captured)"
-	}
-	return writeRunProof(path, templateName, proofRenderInput{
-		Template:    template,
-		Provider:    provider,
-		LeaseID:     leaseID,
-		Slug:        slug,
-		Command:     command,
-		LogExcerpt:  logExcerpt,
-		ActionsURL:  result.ActionsURL,
-		Artifacts:   result.Artifacts,
-		Variables:   req.ProfileVariables,
-		CommandMs:   result.Command.Milliseconds(),
-		ExitCode:    result.ExitCode,
-		GeneratedAt: time.Now(),
-	})
-}
-
-func runCommandDisplay(command []string, shellMode bool) string {
-	return runCommandDisplayWithLiteralArgs(command, shellMode, nil)
-}
-
-func runCommandDisplayWithLiteralArgs(command []string, shellMode bool, literalArgs map[int]bool) string {
-	if shellMode || shouldUseShellWithLiteralArgs(command, literalArgs) {
-		return runCommandShellStringWithLiteralArgs(command, shellMode, literalArgs)
-	}
-	return strings.Join(readableShellWords(command), " ")
-}
-
-func runCommandShellString(command []string, shellMode bool) string {
-	return runCommandShellStringWithLiteralArgs(command, shellMode, nil)
-}
-
-func runCommandShellStringWithLiteralArgs(command []string, shellMode bool, literalArgs map[int]bool) string {
-	if shellMode {
-		return strings.Join(command, " ")
-	}
-	if len(command) == 1 && !literalArgs[0] {
-		return command[0]
-	}
-	return shellScriptFromArgvWithLiteralArgs(command, literalArgs)
-}
-
-func runStopCommand(cfg Config, id string) string {
-	args := []string{"crabbox", "stop", "--provider", cfg.Provider}
-	if strings.TrimSpace(cfg.TargetOS) != "" {
-		args = append(args, "--target", cfg.TargetOS)
-	}
-	if cfg.TargetOS == targetWindows && strings.TrimSpace(cfg.WindowsMode) != "" {
-		args = append(args, "--windows-mode", cfg.WindowsMode)
-	}
-	if strings.TrimSpace(cfg.Static.Host) != "" {
-		args = append(args, "--static-host", cfg.Static.Host)
-	}
-	if strings.TrimSpace(cfg.Static.User) != "" {
-		args = append(args, "--static-user", cfg.Static.User)
-	}
-	if strings.TrimSpace(cfg.Static.Port) != "" {
-		args = append(args, "--static-port", cfg.Static.Port)
-	}
-	if strings.TrimSpace(cfg.Static.WorkRoot) != "" {
-		args = append(args, "--static-work-root", cfg.Static.WorkRoot)
-	}
-	args = appendProviderStopRoutingArgs(args, cfg)
-	if strings.TrimSpace(id) != "" {
-		args = append(args, "--id", id)
-	}
-	return strings.Join(readableShellWords(args), " ")
-}
-
-func appendProviderStopRoutingArgs(args []string, cfg Config) []string {
-	switch normalizeProviderName(cfg.Provider) {
-	case "proxmox":
-		if strings.TrimSpace(cfg.Proxmox.APIURL) != "" {
-			args = append(args, "--proxmox-api-url", cfg.Proxmox.APIURL)
-		}
-		if strings.TrimSpace(cfg.Proxmox.Node) != "" {
-			args = append(args, "--proxmox-node", cfg.Proxmox.Node)
-		}
-		if cfg.Proxmox.InsecureTLS {
-			args = append(args, "--proxmox-insecure-tls")
-		}
-	case "namespace", "namespace-devbox":
-		if strings.TrimSpace(cfg.Namespace.Site) != "" {
-			args = append(args, "--namespace-site", cfg.Namespace.Site)
-		}
-		if strings.TrimSpace(cfg.Namespace.WorkRoot) != "" {
-			args = append(args, "--namespace-work-root", cfg.Namespace.WorkRoot)
-		}
-		if cfg.Namespace.DeleteOnRelease {
-			args = append(args, "--namespace-delete-on-release")
-		}
-	case "daytona":
-		if strings.TrimSpace(cfg.Daytona.APIURL) != "" {
-			args = append(args, "--daytona-api-url", cfg.Daytona.APIURL)
-		}
-		if strings.TrimSpace(cfg.Daytona.Target) != "" {
-			args = append(args, "--daytona-target", cfg.Daytona.Target)
-		}
-		if strings.TrimSpace(cfg.Daytona.User) != "" {
-			args = append(args, "--daytona-user", cfg.Daytona.User)
-		}
-	case "sprites":
-		if strings.TrimSpace(cfg.Sprites.APIURL) != "" {
-			args = append(args, "--sprites-api-url", cfg.Sprites.APIURL)
-		}
-	case "semaphore":
-		if strings.TrimSpace(cfg.Semaphore.Host) != "" {
-			args = append(args, "--semaphore-host", cfg.Semaphore.Host)
-		}
-	case "exe-dev":
-		if strings.TrimSpace(cfg.ExeDev.ControlHost) != "" {
-			args = append(args, "--exe-dev-control-host", cfg.ExeDev.ControlHost)
-		}
-	}
-	return args
-}
-
 type runTimings struct {
-	started       time.Time
-	sync          time.Duration
-	command       time.Duration
-	syncSteps     syncStepTimings
-	commandPhases []timingPhase
-	syncSkipped   bool
-	blockedStage  string
-	retryLikely   string
+	started     time.Time
+	sync        time.Duration
+	command     time.Duration
+	syncSteps   syncStepTimings
+	syncSkipped bool
 }
 
 type syncStepTimings struct {
@@ -1583,7 +541,6 @@ type syncStepTimings struct {
 	mkdir                time.Duration
 	manifest             time.Duration
 	preflight            time.Duration
-	reset                time.Duration
 	fingerprintLocal     time.Duration
 	fingerprintRemote    time.Duration
 	gitSeed              time.Duration
@@ -1593,7 +550,6 @@ type syncStepTimings struct {
 	manifestApply        time.Duration
 	sanity               time.Duration
 	gitHydrate           time.Duration
-	finalize             time.Duration
 	gitHydrateSkipped    bool
 	gitHydrateSkipReason string
 	fingerprintWrite     time.Duration
@@ -1610,10 +566,6 @@ func formatRunSummary(timings runTimings, total time.Duration, exitCode int) str
 	if breakdown := formatSyncStepTimings(timings.syncSteps); breakdown != "" {
 		summary += " sync_steps=" + breakdown
 	}
-	if breakdown := formatCommandPhaseTimings(timings.commandPhases); breakdown != "" {
-		summary += " command_phases=" + breakdown
-	}
-	summary += FormatFailureClassificationFields(FailureClassification{BlockedStage: timings.blockedStage, RetryLikely: timings.retryLikely})
 	return summary
 }
 
@@ -1628,7 +580,6 @@ func formatSyncStepTimings(steps syncStepTimings) string {
 	appendStep("mkdir", steps.mkdir)
 	appendStep("manifest", steps.manifest)
 	appendStep("preflight", steps.preflight)
-	appendStep("reset", steps.reset)
 	appendStep("fingerprint", steps.fingerprintLocal)
 	appendStep("fingerprint_remote", steps.fingerprintRemote)
 	appendStep("git_seed", steps.gitSeed)
@@ -1642,371 +593,32 @@ func formatSyncStepTimings(steps syncStepTimings) string {
 	} else {
 		appendStep("git_hydrate", steps.gitHydrate)
 	}
-	appendStep("finalize", steps.finalize)
 	appendStep("fingerprint_write", steps.fingerprintWrite)
 	return strings.Join(parts, ",")
 }
 
-func shouldPruneRemoteSync(deleteEnabled, fullResync bool) bool {
-	return deleteEnabled || fullResync
-}
-
-func shouldSeedRemotePruneManifest(hydratedByActions, fullResync bool) bool {
-	return hydratedByActions || fullResync
-}
-
 func commandNeedsHydrationHint(command []string, shellMode bool) bool {
-	return len(commandRuntimePreflightTools(command, shellMode)) > 0
-}
-
-func shouldAutoHydrateActions(cfg Config, noHydrate, noSync bool, freshPR FreshPRSpec, syncOnly bool) bool {
-	return strings.TrimSpace(cfg.Actions.Workflow) != "" && !noHydrate && !noSync && freshPR.Empty() && !syncOnly
-}
-
-func rawJSRuntimeHydrateSuggestion(cfg Config, target SSHTarget, leaseID string, acquired, keep, keepOnFailure bool) string {
-	if strings.TrimSpace(cfg.Actions.Workflow) == "" {
-		return ""
-	}
-	if !acquired || keep || keepOnFailure {
-		return hydrateCommandSuggestion(cfg, target, leaseID, supportsActionsRunnerTarget(target))
-	}
-	return "rerun with --keep and then hydrate the kept lease"
-}
-
-func commandRuntimePreflightTools(command []string, shellMode bool) []string {
-	words := commandWords(command, shellMode)
-	if shellWordsContainFailureFallback(words) {
-		return nil
-	}
-	var tools []string
-	for len(words) > 0 {
-		segment, rest := nextShellCommandSegment(words)
-		tool, skip := commandSegmentRuntimePreflightTool(segment)
-		if skip {
-			if len(tools) == 0 {
-				return nil
-			}
-			return tools
-		}
-		if tool != "" {
-			tools = appendUniqueStrings(tools, tool)
-		}
-		words = rest
-	}
-	return tools
-}
-
-func commandSegmentRuntimePreflightTool(words []string) (tool string, skip bool) {
-	var customPath bool
-	words, customPath = stripCommandEnvPrefixes(words)
-	if customPath {
-		return "", true
-	}
-	words = stripSudoCommandPrefix(words)
-	words, customPath = stripCommandEnvPrefixes(words)
-	if customPath {
-		return "", true
-	}
-	if len(words) == 0 {
-		return "", false
-	}
-	first := cleanCommandWord(words[0])
-	if strings.Contains(first, "/") && !strings.HasPrefix(first, "/") {
-		return "", true
-	}
-	base := commandBase(first)
-	if commandRunsForeignShell(base) {
-		return "", true
-	}
-	if commandSegmentSetsPath(base, words[1:]) {
-		return "", true
-	}
-	if commandSegmentSetsUpJSRuntime(base, words[1:]) {
-		return "", true
-	}
-	switch base {
-	case "pnpm", "npm", "npx", "corepack", "yarn", "bun":
-		return first, false
-	case "node":
-		return first, false
-	}
-	if commandMayInstallRuntime(base) {
-		return "", true
-	}
-	return "", false
-}
-
-func commandRunsForeignShell(base string) bool {
-	switch strings.ToLower(base) {
-	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-		return true
-	}
-	return false
-}
-
-func runEnvProvidesPath(env map[string]string, target SSHTarget) bool {
-	for key := range env {
-		if key == "PATH" || isWindowsNativeTarget(target) && strings.EqualFold(key, "PATH") {
-			return true
-		}
-	}
-	return false
-}
-
-func stripCommandEnvPrefixes(words []string) ([]string, bool) {
-	for len(words) > 0 && commandBase(cleanCommandWord(words[0])) == "env" {
-		var customPath bool
-		words, customPath = stripEnvCommandPrefix(words[1:])
-		if customPath {
-			return nil, true
-		}
-	}
-	for len(words) > 0 && shellAssignmentWord(words[0]) {
-		if shellAssignmentKey(words[0]) == "PATH" {
-			return nil, true
-		}
-		words = words[1:]
-	}
-	return words, false
-}
-
-func commandSegmentSetsPath(base string, args []string) bool {
-	if base != "export" {
-		return false
-	}
-	for _, arg := range args {
-		if shellAssignmentWord(cleanCommandWord(arg)) && shellAssignmentKey(cleanCommandWord(arg)) == "PATH" {
-			return true
-		}
-	}
-	return false
-}
-
-func commandSegmentSetsUpJSRuntime(base string, args []string) bool {
-	switch base {
-	case "corepack":
-		return len(args) > 0 && (cleanCommandWord(args[0]) == "enable" || cleanCommandWord(args[0]) == "prepare")
-	case "npm":
-		if len(args) == 0 {
-			return false
-		}
-		action := cleanCommandWord(args[0])
-		if action != "install" && action != "i" && action != "add" {
-			return false
-		}
-		for _, arg := range args[1:] {
-			arg = cleanCommandWord(arg)
-			if arg == "-g" || arg == "--global" || strings.HasPrefix(arg, "--location=global") {
-				return true
-			}
-		}
-	case "yarn":
-		return len(args) >= 2 && cleanCommandWord(args[0]) == "global" && cleanCommandWord(args[1]) == "add"
-	}
-	return false
-}
-
-func stripSudoCommandPrefix(words []string) []string {
-	if len(words) == 0 || commandBase(cleanCommandWord(words[0])) != "sudo" {
-		return words
-	}
-	words = words[1:]
-	for len(words) > 0 {
-		word := cleanCommandWord(words[0])
-		if word == "--" {
-			return words[1:]
-		}
-		if word == "-E" || word == "-n" || word == "-S" || word == "-H" || word == "-k" || word == "-v" {
-			words = words[1:]
-			continue
-		}
-		if word == "-u" || word == "-g" || word == "-C" || word == "-p" || word == "-h" {
-			if len(words) < 2 {
-				return nil
-			}
-			words = words[2:]
-			continue
-		}
-		if strings.HasPrefix(word, "-u") || strings.HasPrefix(word, "-g") || strings.HasPrefix(word, "-C") || strings.HasPrefix(word, "-p") || strings.HasPrefix(word, "-h") {
-			words = words[1:]
-			continue
-		}
-		if strings.HasPrefix(word, "-") {
-			return nil
-		}
-		return words
-	}
-	return nil
-}
-
-func nextShellCommandSegment(words []string) ([]string, []string) {
-	for i, word := range words {
-		if isShellCommandSeparator(word) {
-			return words[:i], words[i+1:]
-		}
-	}
-	return words, nil
-}
-
-func isShellCommandSeparator(word string) bool {
-	switch strings.TrimSpace(word) {
-	case "&&", ";", "|":
-		return true
-	default:
-		return false
-	}
-}
-
-func commandMayInstallRuntime(base string) bool {
-	switch base {
-	case "apt", "apt-get", "apk", "brew", "dnf", "yum", "curl", "wget", "mise", "asdf", "volta", "nvm", "source", ".", "bash", "sh", "zsh":
-		return true
-	default:
-		return false
-	}
-}
-
-func shellWordsContainFailureFallback(words []string) bool {
-	for _, word := range words {
-		if strings.TrimSpace(word) == "||" {
-			return true
-		}
-	}
-	return false
-}
-
-func stripEnvCommandPrefix(words []string) ([]string, bool) {
-	for len(words) > 0 {
-		word := cleanCommandWord(words[0])
-		if shellAssignmentWord(word) {
-			if shellAssignmentKey(word) == "PATH" {
-				return nil, true
-			}
-			words = words[1:]
-			continue
-		}
-		if word == "--" {
-			return words[1:], false
-		}
-		if word == "-u" || word == "--unset" || word == "-C" || word == "--chdir" {
-			if len(words) < 2 {
-				return nil, false
-			}
-			words = words[2:]
-			continue
-		}
-		if word == "-S" || word == "--split-string" {
-			return nil, false
-		}
-		if strings.HasPrefix(word, "--unset=") || strings.HasPrefix(word, "--chdir=") {
-			words = words[1:]
-			continue
-		}
-		if word == "-i" || word == "-" || word == "--ignore-environment" || word == "-0" || word == "--null" {
-			words = words[1:]
-			continue
-		}
-		if strings.HasPrefix(word, "-") {
-			return nil, false
-		}
-		return words, false
-	}
-	return nil, false
-}
-
-func commandWords(command []string, shellMode bool) []string {
 	if len(command) == 0 {
-		return nil
+		return false
 	}
+	words := command
 	if shellMode || len(command) == 1 {
-		return shellCommandWords(strings.Join(command, " "))
+		words = strings.Fields(strings.Join(command, " "))
 	}
-	return append([]string(nil), command...)
-}
-
-func shellCommandWords(value string) []string {
-	var words []string
-	var current strings.Builder
-	var quote rune
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		words = append(words, current.String())
-		current.Reset()
-	}
-	for i, r := range value {
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-				continue
-			}
-			current.WriteRune(r)
-			continue
-		}
-		if r == '\'' || r == '"' {
-			quote = r
-			continue
-		}
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			flush()
-			continue
-		}
-		if i > 0 && ((value[i-1] == '&' && r == '&') || (value[i-1] == '|' && r == '|')) {
-			continue
-		}
-		if r == ';' || r == '|' {
-			flush()
-			if r == '|' && i+1 < len(value) && value[i+1] == '|' {
-				words = append(words, "||")
-				continue
-			}
-			words = append(words, string(r))
-			continue
-		}
-		if r == '&' && i+1 < len(value) && value[i+1] == '&' {
-			flush()
-			words = append(words, "&&")
-			continue
-		}
-		current.WriteRune(r)
-	}
-	flush()
-	return words
-}
-
-func shellAssignmentWord(word string) bool {
-	if strings.HasPrefix(word, "-") {
-		return false
-	}
-	idx := strings.Index(word, "=")
-	if idx <= 0 {
-		return false
-	}
-	name := word[:idx]
-	for i, r := range name {
-		if !(r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9') {
-			return false
+	for len(words) > 0 && words[0] == "env" {
+		words = words[1:]
+		for len(words) > 0 && strings.Contains(words[0], "=") {
+			words = words[1:]
 		}
 	}
-	return true
-}
-
-func shellAssignmentKey(word string) string {
-	key, _, _ := strings.Cut(word, "=")
-	return key
-}
-
-func cleanCommandWord(word string) string {
-	word = strings.TrimSpace(word)
-	return strings.Trim(word, "'\";|&()")
-}
-
-func commandBase(word string) string {
-	if idx := strings.LastIndex(word, "/"); idx >= 0 {
-		word = word[idx+1:]
+	for _, word := range words {
+		word = strings.Trim(word, "'\";|&()")
+		switch word {
+		case "pnpm", "npm", "node", "npx", "corepack", "yarn", "bun":
+			return true
+		}
 	}
-	return word
+	return false
 }
 
 func gitHydrateBaseSHA(repo Repo, baseRef string) string {
@@ -2020,84 +632,72 @@ func gitHydrateBaseSHA(repo Repo, baseRef string) string {
 }
 
 func shouldUseShell(command []string) bool {
-	return shouldUseShellWithLiteralArgs(command, nil)
-}
-
-func shouldUseShellWithLiteralArgs(command []string, literalArgs map[int]bool) bool {
 	if len(command) == 1 {
-		if literalArgs[0] {
-			return false
-		}
-		return strings.ContainsAny(command[0], " \t\r\n&|;<>*$`()")
+		return strings.ContainsAny(command[0], "&|;<>*$`")
 	}
-	if leadingEnvAssignment(command) {
-		return true
-	}
-	for idx, word := range command {
-		if literalArgs[idx] {
-			continue
-		}
-		if isShellControlOperator(word) {
+	for _, word := range command {
+		switch word {
+		case "&&", "||", ";", "|", ">", ">>", "<", "2>", "2>>":
 			return true
 		}
 	}
 	return false
 }
 
-func ShouldUseShell(command []string) bool {
-	return shouldUseShell(command)
-}
-
-func leadingEnvAssignment(command []string) bool {
-	return len(command) > 1 && isShellEnvAssignment(command[0])
-}
-
-func LeadingEnvAssignment(command []string) bool {
-	return leadingEnvAssignment(command)
-}
-
-func shellScriptFromArgvWithLiteralArgs(command []string, literalArgs map[int]bool) string {
-	parts := make([]string, 0, len(command))
-	seenCommand := false
-	for idx, word := range command {
-		if !literalArgs[idx] && isShellControlOperator(word) {
-			parts = append(parts, word)
-			if resetsShellCommandPosition(word) {
-				seenCommand = false
+func (a App) acquireCoordinator(ctx context.Context, cfg Config, coord *CoordinatorClient, keep bool) (Server, SSHTarget, string, error) {
+	leaseID := newLeaseID()
+	slug := newLeaseSlug(leaseID)
+	var keyPath, publicKey string
+	if cfg.Provider == "static-ssh" {
+		keyPath = cfg.SSHKey
+		if keyPath == "" {
+			return Server{}, SSHTarget{}, "", exit(2, "ssh.key is required for static-ssh coordinator leases")
+		}
+		pub, err := publicKeyFor(keyPath)
+		if err != nil {
+			return Server{}, SSHTarget{}, "", err
+		}
+		publicKey = pub
+	} else {
+		var err error
+		keyPath, publicKey, err = ensureTestboxKey(leaseID)
+		if err != nil {
+			return Server{}, SSHTarget{}, "", err
+		}
+	}
+	cfg.SSHKey = keyPath
+	cfg.ProviderKey = providerKeyForLease(leaseID)
+	ensureAWSSSHCIDRs(ctx, &cfg)
+	fmt.Fprintf(a.Stderr, "coordinator lease class=%s preferred_type=%s keep=%v slug=%s idle_timeout=%s ttl=%s\n", cfg.Class, cfg.ServerType, keep, slug, cfg.IdleTimeout, cfg.TTL)
+	lease, err := coord.CreateLease(ctx, cfg, publicKey, keep, leaseID, slug)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if lease.ID != "" && lease.ID != leaseID {
+		if err := moveStoredTestboxKey(leaseID, lease.ID); err != nil {
+			fmt.Fprintf(a.Stderr, "warning: could not move local key from %s to %s: %v\n", leaseID, lease.ID, err)
+		}
+	}
+	server, target, leaseID := leaseToServerTarget(lease, cfg)
+	fmt.Fprintf(a.Stderr, "leased %s slug=%s server=%d type=%s ip=%s via coordinator\n", leaseID, blank(lease.Slug, "-"), server.ID, server.ServerType.Name, target.Host)
+	if summary := coordinatorFallbackSummary(lease); summary != "" {
+		fmt.Fprintf(a.Stderr, "fallback resolved %s\n", summary)
+	}
+	waitCtx, cancelWait := context.WithCancelCause(ctx)
+	defer cancelWait(nil)
+	stopHeartbeat := startCoordinatorHeartbeat(waitCtx, coord, leaseID, cfg.IdleTimeout, nil, a.Stderr)
+	defer stopHeartbeat()
+	stopLeaseWatch := startCoordinatorLeaseWatch(waitCtx, coord, leaseID, cancelWait, a.Stderr)
+	defer stopLeaseWatch()
+	if err := waitForSSH(waitCtx, &target, a.Stderr); err != nil {
+		if !keep {
+			if releaseErr := releaseCoordinatorLease(context.Background(), coord, leaseID); releaseErr != nil {
+				fmt.Fprintf(a.Stderr, "warning: release failed after bootstrap error for %s: %v\n", leaseID, releaseErr)
 			}
-			continue
 		}
-		if !literalArgs[idx] && !seenCommand && isShellEnvAssignment(word) {
-			key, value, _ := strings.Cut(word, "=")
-			parts = append(parts, key+"="+shellQuote(value))
-			continue
-		}
-		seenCommand = true
-		parts = append(parts, shellQuote(word))
+		return Server{}, SSHTarget{}, "", err
 	}
-	return strings.Join(parts, " ")
-}
-
-func validateCoordinatorLeaseCapabilities(cfg Config, lease CoordinatorLease) error {
-	if cfg.Desktop && !lease.Desktop {
-		return exit(5, "coordinator did not provision desktop=true for lease %s; deploy the coordinator with desktop/VNC support", blank(lease.ID, "-"))
-	}
-	if cfg.Desktop {
-		requestedDesktopEnv := normalizedDesktopEnv(cfg.DesktopEnv)
-		if requestedDesktopEnv != desktopEnvXFCE && normalizedDesktopEnv(lease.DesktopEnv) != requestedDesktopEnv {
-			return exit(5, "coordinator did not provision desktopEnv=%s for lease %s; deploy the coordinator with desktop environment support", requestedDesktopEnv, blank(lease.ID, "-"))
-		}
-	}
-	if cfg.Browser && !lease.Browser {
-		return exit(5, "coordinator did not provision browser=true for lease %s; deploy the coordinator with browser support", blank(lease.ID, "-"))
-	}
-	if cfg.Code && !lease.Code {
-		return exit(5, "coordinator did not provision code=true for lease %s; deploy the coordinator with web code support", blank(lease.ID, "-"))
-	}
-	if cfg.Tailscale.Enabled && (lease.Tailscale == nil || !lease.Tailscale.Enabled) {
-		return exit(5, "coordinator did not provision tailscale=true for lease %s; deploy the coordinator with Tailscale support", blank(lease.ID, "-"))
-	}
-	return nil
+	return server, target, leaseID, nil
 }
 
 func applyResolvedServerConfig(cfg *Config, server Server) {
@@ -2107,30 +707,6 @@ func applyResolvedServerConfig(cfg *Config, server Server) {
 	if server.ServerType.Name != "" {
 		cfg.ServerType = server.ServerType.Name
 	}
-	if root := server.Labels["work_root"]; root != "" {
-		cfg.WorkRoot = root
-	}
-	if cfg.Provider == "local-container" || server.Provider == "local-container" {
-		if root := server.Labels["work_root"]; root != "" {
-			cfg.LocalContainer.WorkRoot = root
-		}
-		if labelBool(server.Labels["docker_socket"]) {
-			cfg.LocalContainer.DockerSocket = true
-		}
-	}
-}
-
-func readyNetworkDisplay(cfg Config, server Server, target SSHTarget) NetworkMode {
-	if target.NetworkKind != "" {
-		return target.NetworkKind
-	}
-	if cfg.Provider == "daytona" || server.Provider == "daytona" {
-		return NetworkPublic
-	}
-	if target.Host != server.PublicNet.IPv4.IP && target.Host != "" {
-		return NetworkTailscale
-	}
-	return NetworkPublic
 }
 
 func coordinatorFallbackSummary(lease CoordinatorLease) string {
@@ -2143,9 +719,6 @@ func coordinatorFallbackSummary(lease CoordinatorLease) string {
 	attempts := make([]string, 0, len(lease.ProvisioningAttempts))
 	for _, attempt := range lease.ProvisioningAttempts {
 		label := attempt.ServerType
-		if attempt.Region != "" {
-			label = attempt.Region + "/" + label
-		}
 		if attempt.Market != "" && attempt.Market != "spot" {
 			label = attempt.Market + "/" + label
 		}
@@ -2157,33 +730,45 @@ func coordinatorFallbackSummary(lease CoordinatorLease) string {
 	return fmt.Sprintf("requested_type=%s actual_type=%s attempts=%s", lease.RequestedServerType, lease.ServerType, blank(strings.Join(attempts, ","), "-"))
 }
 
-func coordinatorCapacityHintLines(lease CoordinatorLease) []string {
-	lines := make([]string, 0, len(lease.CapacityHints))
-	for _, hint := range lease.CapacityHints {
-		if hint.Code == "" && hint.Message == "" {
-			continue
+func (a App) acquireCoordinatorWithRetry(ctx context.Context, cfg Config, coord *CoordinatorClient, keep bool) (Server, SSHTarget, string, error) {
+	var lastErr error
+	attempts := acquireAttempts(keep)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		server, target, leaseID, err := a.acquireCoordinator(ctx, cfg, coord, keep)
+		if err == nil {
+			return server, target, leaseID, nil
 		}
-		line := hint.Code
-		if hint.Message != "" {
-			if line != "" {
-				line += ": "
-			}
-			line += hint.Message
+		lastErr = err
+		if attempt == attempts || !isBootstrapWaitError(err) {
+			return Server{}, SSHTarget{}, "", err
 		}
-		if hint.Action != "" {
-			line += " action=" + hint.Action
-		}
-		lines = append(lines, line)
+		fmt.Fprintf(a.Stderr, "warning: bootstrap failed; retrying with fresh lease: %v\n", err)
 	}
-	return lines
+	return Server{}, SSHTarget{}, "", lastErr
 }
 
-func acquireAttempts(bool) int {
+func (a App) acquireWithRetry(ctx context.Context, cfg Config, keep bool) (Server, SSHTarget, string, error) {
+	var lastErr error
+	attempts := acquireAttempts(keep)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		server, target, leaseID, err := a.acquire(ctx, cfg, keep)
+		if err == nil {
+			return server, target, leaseID, nil
+		}
+		lastErr = err
+		if attempt == attempts || !isBootstrapWaitError(err) {
+			return Server{}, SSHTarget{}, "", err
+		}
+		fmt.Fprintf(a.Stderr, "warning: bootstrap failed; retrying with fresh lease: %v\n", err)
+	}
+	return Server{}, SSHTarget{}, "", lastErr
+}
+
+func acquireAttempts(keep bool) int {
+	if keep {
+		return 1
+	}
 	return 2
-}
-
-func AcquireAttempts(keep bool) int {
-	return acquireAttempts(keep)
 }
 
 func isBootstrapWaitError(err error) bool {
@@ -2191,23 +776,6 @@ func isBootstrapWaitError(err error) bool {
 	return AsExitError(err, &exitErr) &&
 		exitErr.Code == 5 &&
 		strings.Contains(exitErr.Message, "timed out waiting for SSH")
-}
-
-func IsBootstrapWaitError(err error) bool {
-	return isBootstrapWaitError(err)
-}
-
-func shouldReplaceLeaseAfterBeforeCommandSSHFailure(err error, acquired, useCoordinator, explicitLeaseID, keep, keepOnFailure, noSync, syncOnly bool, stopAfter, requestedSlug string) bool {
-	if !isBootstrapWaitError(err) ||
-		!acquired ||
-		!useCoordinator ||
-		explicitLeaseID ||
-		noSync ||
-		syncOnly ||
-		strings.TrimSpace(requestedSlug) != "" {
-		return false
-	}
-	return shouldReleaseRunLease(acquired, keep, keepOnFailure, stopAfter, err)
 }
 
 func releaseCoordinatorLease(ctx context.Context, coord *CoordinatorClient, leaseID string) error {
@@ -2228,75 +796,36 @@ func releaseCoordinatorLease(ctx context.Context, coord *CoordinatorClient, leas
 	return lastErr
 }
 
-type leaseCleanupResult struct {
-	Attempted bool
-	Stopped   bool
-	Err       error
+func (a App) releaseAcquiredLeaseBestEffort(ctx context.Context, cfg Config, coord *CoordinatorClient, useCoordinator bool, server Server, target SSHTarget, leaseID string) {
+	a.writeActionsHydrationStopBestEffort(ctx, target, leaseID)
+	fmt.Fprintf(a.Stderr, "releasing %s server=%s\n", leaseID, server.DisplayID())
+	if useCoordinator {
+		if err := releaseCoordinatorLease(ctx, coord, leaseID); err != nil {
+			fmt.Fprintf(a.Stderr, "warning: release failed for %s: %v\n", leaseID, err)
+		}
+	} else if server.Provider != "static-ssh" {
+		if err := deleteServer(ctx, cfg, server); err != nil {
+			fmt.Fprintf(a.Stderr, "warning: delete failed for %s: %v\n", leaseID, err)
+		}
+	}
+	removeLeaseClaim(leaseID)
 }
 
-func (result leaseCleanupResult) apply(report *timingReport) {
-	if !result.Attempted || report == nil {
-		return
-	}
-	stopped := result.Stopped
-	report.LeaseStopped = &stopped
-	if result.Err != nil {
-		report.LeaseStopErr = result.Err.Error()
-	}
-}
-
-func (a App) releaseBackendLeaseBestEffort(ctx context.Context, backend SSHLeaseBackend, lease LeaseTarget) error {
-	a.writeActionsHydrationStopBestEffort(ctx, lease.SSH, lease.LeaseID)
-	fmt.Fprintf(a.Stderr, "releasing %s server=%s\n", lease.LeaseID, lease.Server.DisplayID())
-	if err := backend.ReleaseLease(ctx, ReleaseLeaseRequest{Lease: lease, Force: true}); err != nil {
-		fmt.Fprintf(a.Stderr, "warning: release failed for %s: %v\n", lease.LeaseID, err)
-		return err
-	}
-	return nil
-}
-
-func startCoordinatorHeartbeat(ctx context.Context, coord *CoordinatorClient, leaseID string, idleTimeout time.Duration, updateIdleTimeout *time.Duration, telemetryCollector leaseTelemetryCollector, stderr io.Writer) func() {
+func startCoordinatorHeartbeat(ctx context.Context, coord *CoordinatorClient, leaseID string, idleTimeout time.Duration, updateIdleTimeout *time.Duration, stderr io.Writer) func() {
 	rootCtx, cancel := context.WithCancel(ctx)
 	interval := heartbeatInterval(idleTimeout)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		var control *coordinatorControlConn
-		defer func() {
-			if control != nil {
-				control.close()
-			}
-		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			telemetry := collectLeaseTelemetryBestEffort(rootCtx, telemetryCollector)
 			callCtx, heartbeatCancel := context.WithTimeout(rootCtx, 20*time.Second)
 			var err error
-			var idleTimeoutOverride *time.Duration
 			if updateIdleTimeout != nil {
-				idleTimeoutOverride = updateIdleTimeout
-			}
-			if control == nil {
-				dialCtx, dialCancel := context.WithTimeout(callCtx, coordinatorControlDialTimeout)
-				control, _ = dialCoordinatorControl(dialCtx, coord)
-				dialCancel()
-			}
-			if control != nil {
-				err = control.heartbeat(callCtx, leaseID, idleTimeoutOverride, telemetry)
-				if err != nil {
-					control.close()
-					control = nil
-				}
-			}
-			if control == nil {
-				if updateIdleTimeout != nil {
-					_, err = coord.UpdateLeaseIdleTimeoutWithTelemetry(callCtx, leaseID, *updateIdleTimeout, telemetry)
-				} else {
-					_, err = coord.TouchLeaseWithTelemetry(callCtx, leaseID, telemetry)
-				}
+				_, err = coord.UpdateLeaseIdleTimeout(callCtx, leaseID, *updateIdleTimeout)
 			} else {
-				err = nil
+				_, err = coord.TouchLease(callCtx, leaseID)
 			}
 			heartbeatCancel()
 			if err != nil && rootCtx.Err() == nil {
@@ -2384,6 +913,229 @@ func heartbeatInterval(ttl time.Duration) time.Duration {
 	return interval
 }
 
+func (a App) touchLeaseBestEffort(ctx context.Context, cfg Config, identifier, leaseID string) {
+	if _, ok, err := newCoordinatorClient(cfg); err == nil && ok {
+		if leaseID == "" {
+			leaseID = identifier
+		}
+		a.touchCoordinatorLeaseBestEffort(ctx, cfg, leaseID)
+		return
+	}
+	server, _, _, err := a.findLease(ctx, cfg, identifier)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "warning: direct touch failed for %s: %v\n", identifier, err)
+		return
+	}
+	a.touchDirectLeaseBestEffort(ctx, cfg, server, blank(server.Labels["state"], "ready"))
+}
+
+func (a App) touchActiveLeaseBestEffort(ctx context.Context, cfg Config, server Server, leaseID string) Server {
+	if _, ok, err := newCoordinatorClient(cfg); err == nil && ok {
+		a.touchCoordinatorLeaseBestEffort(ctx, cfg, leaseID)
+		return server
+	}
+	return a.touchDirectLeaseBestEffort(ctx, cfg, server, blank(server.Labels["state"], "ready"))
+}
+
+func (a App) touchDirectLeaseBestEffort(ctx context.Context, cfg Config, server Server, state string) Server {
+	if cfg.Provider == "static-ssh" || server.Provider == "static-ssh" {
+		return server
+	}
+	if server.Labels == nil {
+		server.Labels = map[string]string{}
+	}
+	server.Labels = touchDirectLeaseLabels(server.Labels, cfg, state, time.Now().UTC())
+	if cfg.Provider == "aws" || server.Provider == "aws" || strings.HasPrefix(server.CloudID, "i-") {
+		client, err := newAWSClient(ctx, cfg)
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "warning: direct touch state=%s: %v\n", state, err)
+			return server
+		}
+		if err := client.SetTags(ctx, server.CloudID, server.Labels); err != nil {
+			fmt.Fprintf(a.Stderr, "warning: direct touch state=%s: %v\n", state, err)
+		}
+		return server
+	}
+	client, err := newHetznerClient()
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "warning: direct touch state=%s: %v\n", state, err)
+		return server
+	}
+	if err := client.SetLabels(ctx, server.ID, server.Labels); err != nil {
+		fmt.Fprintf(a.Stderr, "warning: direct touch state=%s: %v\n", state, err)
+	}
+	return server
+}
+
+func (a App) acquireStaticSSH(ctx context.Context, cfg Config) (Server, SSHTarget, string, error) {
+	if cfg.StaticSSHHost == "" {
+		return Server{}, SSHTarget{}, "", exit(2, "static-ssh requires static.host in config or CRABBOX_STATIC_SSH_HOST")
+	}
+	leaseID := newLeaseID()
+	slug := newLeaseSlug(leaseID)
+	target := SSHTarget{
+		User:          cfg.SSHUser,
+		Host:          cfg.StaticSSHHost,
+		Key:           cfg.SSHKey,
+		Port:          cfg.SSHPort,
+		FallbackPorts: cfg.SSHFallbackPorts,
+	}
+	server := Server{
+		CloudID:  "static-" + leaseID,
+		Provider: "static-ssh",
+		Name:     cfg.StaticSSHHost,
+		Status:   "ready",
+		Labels: map[string]string{
+			"lease": leaseID,
+			"slug":  slug,
+			"state": "ready",
+		},
+	}
+	server.ServerType.Name = "static"
+	server.PublicNet.IPv4.IP = cfg.StaticSSHHost
+	cp := sshControlPath(target)
+	if dir := strings.TrimSuffix(cp, "%C"); dir != cp {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			fmt.Fprintf(a.Stderr, "warning: could not create control path directory: %v\n", err)
+		}
+	}
+	fmt.Fprintf(a.Stderr, "using static-ssh host=%s user=%s slug=%s\n", cfg.StaticSSHHost, cfg.SSHUser, slug)
+	if err := waitForSSH(ctx, &target, a.Stderr); err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	return server, target, leaseID, nil
+}
+
+func (a App) acquire(ctx context.Context, cfg Config, keep bool) (Server, SSHTarget, string, error) {
+	if cfg.Provider == "static-ssh" {
+		return a.acquireStaticSSH(ctx, cfg)
+	}
+	if cfg.Provider == "aws" {
+		return a.acquireAWS(ctx, cfg, keep)
+	}
+	client, err := newHetznerClient()
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	leaseID := newLeaseID()
+	servers, err := client.ListCrabboxServers(ctx)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	slug := allocateDirectLeaseSlug(leaseID, servers)
+	keyPath, publicKey, err := ensureTestboxKey(leaseID)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	cfg.SSHKey = keyPath
+	cfg.ProviderKey = providerKeyForLease(leaseID)
+	if cfg.ProviderKey != "" {
+		providerKey, err := client.EnsureSSHKey(ctx, cfg.ProviderKey, publicKey)
+		if err != nil {
+			return Server{}, SSHTarget{}, "", err
+		}
+		cfg.ProviderKey = providerKey.Name
+	}
+	fmt.Fprintf(a.Stderr, "provisioning provider=hetzner lease=%s slug=%s class=%s preferred_type=%s location=%s keep=%v\n", leaseID, slug, cfg.Class, cfg.ServerType, cfg.Location, keep)
+	server, cfg, err := client.CreateServerWithFallback(ctx, cfg, publicKey, leaseID, slug, keep, func(format string, args ...any) {
+		fmt.Fprintf(a.Stderr, format, args...)
+	})
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	fmt.Fprintf(a.Stderr, "provisioned lease=%s server=%d type=%s\n", leaseID, server.ID, cfg.ServerType)
+	server, err = waitForServerIP(ctx, client, server.ID)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+	if err := waitForSSH(ctx, &target, a.Stderr); err != nil {
+		if !keep {
+			_ = deleteServer(context.Background(), cfg, server)
+		}
+		return Server{}, SSHTarget{}, "", err
+	}
+	server.Labels["state"] = "ready"
+	if err := client.SetLabels(ctx, server.ID, server.Labels); err != nil {
+		fmt.Fprintf(a.Stderr, "warning: set labels: %v\n", err)
+	}
+	return server, target, leaseID, nil
+}
+
+func (a App) acquireAWS(ctx context.Context, cfg Config, keep bool) (Server, SSHTarget, string, error) {
+	cfg = a.chooseAWSRegion(ctx, cfg)
+	client, err := newAWSClient(ctx, cfg)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	leaseID := newLeaseID()
+	servers, err := client.ListCrabboxServers(ctx)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	slug := allocateDirectLeaseSlug(leaseID, servers)
+	keyPath, publicKey, err := ensureTestboxKey(leaseID)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	cfg.SSHKey = keyPath
+	cfg.ProviderKey = providerKeyForLease(leaseID)
+	ensureAWSSSHCIDRs(ctx, &cfg)
+	fmt.Fprintf(a.Stderr, "provisioning provider=aws lease=%s slug=%s class=%s preferred_type=%s region=%s keep=%v market=%s strategy=%s\n", leaseID, slug, cfg.Class, cfg.ServerType, cfg.AWSRegion, keep, cfg.Capacity.Market, cfg.Capacity.Strategy)
+	server, cfg, err := client.CreateServerWithFallback(ctx, cfg, publicKey, leaseID, slug, keep, func(format string, args ...any) {
+		fmt.Fprintf(a.Stderr, format, args...)
+	})
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	fmt.Fprintf(a.Stderr, "provisioned lease=%s server=%s type=%s\n", leaseID, server.DisplayID(), cfg.ServerType)
+	server, err = client.waitForServerIP(ctx, server.CloudID)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+	if err := waitForSSH(ctx, &target, a.Stderr); err != nil {
+		if !keep {
+			_ = client.DeleteServer(context.Background(), server.CloudID)
+		}
+		return Server{}, SSHTarget{}, "", err
+	}
+	server.Labels["state"] = "ready"
+	if err := client.SetTags(ctx, server.CloudID, server.Labels); err != nil {
+		fmt.Fprintf(a.Stderr, "warning: set tags: %v\n", err)
+	}
+	return server, target, leaseID, nil
+}
+
+func (a App) chooseAWSRegion(ctx context.Context, cfg Config) Config {
+	if cfg.Provider != "aws" || cfg.Capacity.Market != "spot" || len(cfg.Capacity.Regions) < 2 {
+		return cfg
+	}
+	client, err := newAWSClient(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "warning: spot placement score unavailable: %v\n", err)
+		return cfg
+	}
+	scores, err := client.SpotPlacementScores(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "warning: spot placement score unavailable: %v\n", err)
+		return cfg
+	}
+	if len(scores) == 0 {
+		return cfg
+	}
+	best := awsString(scores[0].Region)
+	score := int32(0)
+	if scores[0].Score != nil {
+		score = *scores[0].Score
+	}
+	if best != "" && best != cfg.AWSRegion {
+		fmt.Fprintf(a.Stderr, "selected aws region=%s spot_score=%d previous=%s\n", best, score, cfg.AWSRegion)
+		cfg.AWSRegion = best
+	}
+	return cfg
+}
+
 func waitForServerIP(ctx context.Context, client *HetznerClient, id int64) (Server, error) {
 	deadline := time.Now().Add(5 * time.Minute)
 	for {
@@ -2401,8 +1153,111 @@ func waitForServerIP(ctx context.Context, client *HetznerClient, id int64) (Serv
 	}
 }
 
-func WaitForServerIP(ctx context.Context, client *HetznerClient, id int64) (Server, error) {
-	return waitForServerIP(ctx, client, id)
+func (a App) findStaticSSHLease(id string, cfg Config) (Server, SSHTarget, string, error) {
+	if cfg.StaticSSHHost == "" {
+		return Server{}, SSHTarget{}, "", exit(2, "static-ssh requires static.host in config or CRABBOX_STATIC_SSH_HOST")
+	}
+	claim, ok, err := resolveLeaseClaim(id)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if !ok {
+		return Server{}, SSHTarget{}, "", exit(4, "lease not found: %s (no claim file)", id)
+	}
+	leaseID := claim.LeaseID
+	slug := claim.Slug
+	target := SSHTarget{
+		User:          cfg.SSHUser,
+		Host:          cfg.StaticSSHHost,
+		Key:           cfg.SSHKey,
+		Port:          cfg.SSHPort,
+		FallbackPorts: cfg.SSHFallbackPorts,
+	}
+	useStoredTestboxKey(&target, leaseID)
+	server := Server{
+		CloudID:  "static-" + leaseID,
+		Provider: "static-ssh",
+		Name:     cfg.StaticSSHHost,
+		Status:   "ready",
+		Labels: map[string]string{
+			"lease": leaseID,
+			"slug":  slug,
+			"state": "ready",
+		},
+	}
+	server.ServerType.Name = "static"
+	server.PublicNet.IPv4.IP = cfg.StaticSSHHost
+	return server, target, leaseID, nil
+}
+
+func (a App) findLease(ctx context.Context, cfg Config, id string) (Server, SSHTarget, string, error) {
+	if cfg.Provider == "static-ssh" {
+		return a.findStaticSSHLease(id, cfg)
+	}
+	if cfg.Provider == "aws" {
+		return a.findAWSLease(ctx, cfg, id)
+	}
+	client, err := newHetznerClient()
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if serverID, ok := parseServerID(id); ok {
+		server, err := client.GetServer(ctx, serverID)
+		if err != nil {
+			return Server{}, SSHTarget{}, "", err
+		}
+		leaseID := server.Labels["lease"]
+		if leaseID == "" {
+			leaseID = id
+		}
+		target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+		useStoredTestboxKey(&target, leaseID)
+		return server, target, leaseID, nil
+	}
+	servers, err := client.ListCrabboxServers(ctx)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if server, leaseID, err := findServerByAlias(servers, id); err != nil {
+		return Server{}, SSHTarget{}, "", err
+	} else if leaseID != "" {
+		target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+		useStoredTestboxKey(&target, leaseID)
+		return server, target, leaseID, nil
+	}
+	return Server{}, SSHTarget{}, "", exit(4, "lease/server not found: %s", id)
+}
+
+func (a App) findAWSLease(ctx context.Context, cfg Config, id string) (Server, SSHTarget, string, error) {
+	client, err := newAWSClient(ctx, cfg)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if strings.HasPrefix(id, "i-") {
+		server, err := client.GetServer(ctx, id)
+		if err != nil {
+			return Server{}, SSHTarget{}, "", err
+		}
+		leaseID := server.Labels["lease"]
+		if leaseID == "" {
+			leaseID = id
+		}
+		target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+		useStoredTestboxKey(&target, leaseID)
+		return server, target, leaseID, nil
+	}
+	servers, err := client.ListCrabboxServers(ctx)
+	if err != nil {
+		return Server{}, SSHTarget{}, "", err
+	}
+	if server, leaseID, err := findServerByAlias(servers, id); err != nil {
+		return Server{}, SSHTarget{}, "", err
+	} else if leaseID != "" {
+		target := sshTargetFromConfig(cfg, server.PublicNet.IPv4.IP)
+		useStoredTestboxKey(&target, leaseID)
+		return server, target, leaseID, nil
+	}
+	return Server{}, SSHTarget{}, "", exit(4, "lease/server not found: %s", id)
 }
 
 func findServerByAlias(servers []Server, id string) (Server, string, error) {
@@ -2439,79 +1294,69 @@ func findServerByAlias(servers []Server, id string) (Server, string, error) {
 	return Server{}, "", nil
 }
 
-func FindServerByAlias(servers []Server, id string) (Server, string, error) {
-	return findServerByAlias(servers, id)
-}
-
 func (a App) stop(ctx context.Context, args []string) error {
-	defaults := defaultConfig()
 	fs := newFlagSet("stop", a.Stderr)
-	provider := fs.String("provider", defaults.Provider, providerHelpAll())
-	id := fs.String("id", "", "lease id or slug")
-	providerFlags := registerProviderFlags(fs, defaults)
-	targetFlags := registerTargetFlags(fs, defaults)
+	provider := fs.String("provider", defaultConfig().Provider, "provider: hetzner, aws, static-ssh, or blacksmith-testbox")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	idFlagSet := flagWasSet(fs, "id")
-	setIDFromFirstArg(fs, id)
-	if strings.TrimSpace(*id) == "" || fs.NArg() > 1 || (idFlagSet && fs.NArg() > 0) {
-		return exit(2, "usage: crabbox stop --id <lease-or-server-id>")
+	if fs.NArg() != 1 {
+		return exit(2, "usage: crabbox stop <lease-or-server-id>")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	cfg.Provider = *provider
-	if err := applyProviderFlags(&cfg, fs, providerFlags); err != nil {
-		return err
+	if flagWasSet(fs, "provider") {
+		cfg.Provider = *provider
 	}
-	if err := applyTargetFlagOverrides(&cfg, fs, targetFlags); err != nil {
-		return err
+	if isBlacksmithProvider(cfg.Provider) {
+		return a.blacksmithStop(ctx, cfg, fs.Arg(0))
 	}
-	if err := autoRouteStaticLease(&cfg, fs, *id); err != nil {
-		return err
-	}
-	backend, err := loadBackend(cfg, runtimeForApp(a))
-	if err != nil {
-		return err
-	}
-	if delegated, ok := backend.(DelegatedRunBackend); ok {
-		return delegated.Stop(ctx, StopRequest{Options: leaseOptionsFromConfig(cfg), ID: *id})
-	}
-	sshBackend, ok := backend.(SSHLeaseBackend)
-	if !ok {
-		return exit(2, "provider=%s does not support stop", backend.Spec().Name)
-	}
-	lease, err := sshBackend.Resolve(ctx, ResolveRequest{Options: leaseOptionsFromConfig(cfg), ID: *id, ReleaseOnly: true})
-	if err != nil {
-		if backendCoordinator(backend) != nil {
-			fmt.Fprintf(a.Stderr, "warning: could not inspect lease before release: %v\n", err)
-			lease = LeaseTarget{LeaseID: *id}
-		} else {
+	if cfg.Provider == "static-ssh" {
+		claim, ok, err := resolveLeaseClaim(fs.Arg(0))
+		if err != nil {
 			return err
 		}
+		if !ok {
+			return exit(4, "lease not found: %s", fs.Arg(0))
+		}
+		removeLeaseClaim(claim.LeaseID)
+		fmt.Fprintf(a.Stdout, "stopped static-ssh lease=%s slug=%s\n", claim.LeaseID, blank(claim.Slug, "-"))
+		return nil
 	}
-	if lease.SSH.Host != "" {
-		a.writeActionsHydrationStopBestEffort(ctx, lease.SSH, lease.LeaseID)
+	if coord, ok, err := newCoordinatorClient(cfg); err != nil {
+		return err
+	} else if ok {
+		if lease, err := coord.GetLease(ctx, fs.Arg(0)); err == nil {
+			_, target, leaseID := leaseToServerTarget(lease, cfg)
+			a.writeActionsHydrationStopBestEffort(ctx, target, leaseID)
+		} else {
+			fmt.Fprintf(a.Stderr, "warning: could not inspect lease before release: %v\n", err)
+		}
+		released, err := coord.ReleaseLease(ctx, fs.Arg(0), true)
+		if err != nil {
+			return err
+		}
+		removeLeaseClaim(released.ID)
+		fmt.Fprintf(a.Stderr, "released lease=%s server=%s\n", released.ID, leaseDisplayID(released))
+		return nil
 	}
-	if err := sshBackend.ReleaseLease(ctx, ReleaseLeaseRequest{Lease: lease, Force: true}); err != nil {
+	server, target, leaseID, err := a.findLease(ctx, cfg, fs.Arg(0))
+	if err != nil {
 		return err
 	}
-	if backendCoordinator(backend) != nil {
-		fmt.Fprintf(a.Stderr, "released lease=%s server=%s\n", lease.LeaseID, lease.Server.DisplayID())
-		return nil
+	a.writeActionsHydrationStopBestEffort(ctx, target, leaseID)
+	fmt.Fprintf(a.Stderr, "deleting lease=%s server=%s name=%s\n", leaseID, server.DisplayID(), server.Name)
+	if err := deleteServer(ctx, cfg, server); err != nil {
+		return err
 	}
-	if reporter, ok := backend.(ReleaseLeaseReporter); ok {
-		fmt.Fprintln(a.Stderr, reporter.ReleaseLeaseMessage(lease))
-		return nil
-	}
-	fmt.Fprintf(a.Stderr, "deleted lease=%s server=%s name=%s\n", lease.LeaseID, lease.Server.DisplayID(), lease.Server.Name)
+	removeLeaseClaim(leaseID)
 	return nil
 }
 
 func (a App) writeActionsHydrationStopBestEffort(ctx context.Context, target SSHTarget, leaseID string) {
-	if !shouldWriteActionsHydrationStop(leaseID, target) {
+	if leaseID == "" || target.Host == "" {
 		return
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -2521,10 +1366,6 @@ func (a App) writeActionsHydrationStopBestEffort(ctx context.Context, target SSH
 	}
 }
 
-func shouldWriteActionsHydrationStop(leaseID string, target SSHTarget) bool {
-	return leaseID != "" && target.Host != ""
-}
-
 func leaseDisplayID(lease CoordinatorLease) string {
 	if lease.CloudID != "" {
 		return lease.CloudID
@@ -2532,15 +1373,34 @@ func leaseDisplayID(lease CoordinatorLease) string {
 	return fmt.Sprint(lease.ServerID)
 }
 
-func localContainerDockerSocketSync(cfg Config, server Server) bool {
-	if cfg.Provider != "local-container" && server.Provider != "local-container" {
-		return false
+func deleteServer(ctx context.Context, cfg Config, server Server) error {
+	if cfg.Provider == "static-ssh" || server.Provider == "static-ssh" {
+		return nil
 	}
-	return cfg.LocalContainer.DockerSocket || labelBool(server.Labels["docker_socket"])
-}
-
-func localContainerDockerSocketConfig(cfg Config) bool {
-	return cfg.Provider == "local-container" && cfg.LocalContainer.DockerSocket
+	if cfg.Provider == "aws" || server.Provider == "aws" || strings.HasPrefix(server.CloudID, "i-") {
+		client, err := newAWSClient(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		if err := client.DeleteServer(ctx, server.CloudID); err != nil {
+			return err
+		}
+		if keyName := serverProviderKey(server); validCrabboxProviderKey(keyName) {
+			return client.DeleteSSHKey(ctx, keyName)
+		}
+		return nil
+	}
+	client, err := newHetznerClient()
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteServer(ctx, server.ID); err != nil {
+		return err
+	}
+	if keyName := serverProviderKey(server); validCrabboxProviderKey(keyName) {
+		return client.DeleteSSHKey(ctx, keyName)
+	}
+	return nil
 }
 
 func serverProviderKey(server Server) string {

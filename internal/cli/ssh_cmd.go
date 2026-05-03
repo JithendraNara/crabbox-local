@@ -3,49 +3,41 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 func (a App) ssh(ctx context.Context, args []string) error {
-	defaults := defaultConfig()
 	fs := newFlagSet("ssh", a.Stderr)
-	provider := fs.String("provider", defaults.Provider, providerHelpSSH())
+	provider := fs.String("provider", defaultConfig().Provider, "provider: hetzner, aws, or static-ssh")
 	id := fs.String("id", "", "lease id or slug")
 	reclaim := fs.Bool("reclaim", false, "claim this lease for the current repo")
-	showSecret := fs.Bool("show-secret", false, "print secret auth material for token-based SSH providers")
-	targetFlags := registerTargetFlags(fs, defaults)
-	networkFlags := registerNetworkModeFlag(fs, defaults)
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	setIDFromFirstArg(fs, id)
-	cfg, err := loadLeaseTargetConfig(fs, *provider, targetFlags, networkFlags, leaseTargetConfigOptions{LeaseID: *id})
+	if *id == "" && fs.NArg() > 0 {
+		*id = fs.Arg(0)
+	}
+	if *id == "" {
+		return exit(2, "usage: crabbox ssh --id <lease-id-or-slug>")
+	}
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	if err := requireLeaseID(*id, "crabbox ssh --id <lease-id-or-slug>", cfg); err != nil {
-		return err
+	if flagWasSet(fs, "provider") {
+		cfg.Provider = *provider
 	}
-	server, target, leaseID, err := a.resolveNetworkLeaseTarget(ctx, cfg, *id, false)
+	server, target, leaseID, err := a.resolveLeaseTarget(ctx, cfg, *id)
 	if err != nil {
 		return err
 	}
-	if err := a.claimAndTouchLeaseTarget(ctx, cfg, server, target, leaseID, *reclaim); err != nil {
+	repo, err := findRepo()
+	if err != nil {
 		return err
 	}
-	if target.AuthSecret && !*showSecret {
-		fmt.Fprintf(a.Stderr, "warning: ssh auth user is secret; rerun with --show-secret to print a pasteable command\n")
+	if err := claimLeaseForRepo(leaseID, serverSlug(server), repo.Root, cfg.IdleTimeout, *reclaim); err != nil {
+		return err
 	}
-	fmt.Fprintln(a.Stdout, sshCommandLine(target, target.AuthSecret && !*showSecret))
+	a.touchActiveLeaseBestEffort(ctx, cfg, server, leaseID)
+	fmt.Fprintf(a.Stdout, "ssh -i %s -p %s %s@%s\n", target.Key, target.Port, target.User, target.Host)
 	return nil
-}
-
-func sshCommandLine(target SSHTarget, redactSecret bool) string {
-	renderTarget := target
-	if redactSecret {
-		renderTarget.User = "<token>"
-	}
-	args := append([]string{"ssh"}, sshBaseArgs(renderTarget)...)
-	args = append(args, renderTarget.User+"@"+renderTarget.Host)
-	return strings.Join(shellWords(args), " ")
 }

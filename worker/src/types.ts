@@ -11,45 +11,7 @@ export interface Env {
   CRABBOX_AWS_INSTANCE_PROFILE?: string;
   CRABBOX_AWS_ROOT_GB?: string;
   CRABBOX_AWS_SSH_CIDRS?: string;
-  CRABBOX_AWS_FAST_SNAPSHOT_RESTORE_AZS?: string;
-  CRABBOX_HOST_ID?: string;
-  CRABBOX_AWS_MAC_HOST_ID?: string;
-  CRABBOX_AWS_ORPHAN_SWEEP_ENABLED?: string;
-  CRABBOX_AWS_ORPHAN_SWEEP_DELETE?: string;
-  CRABBOX_AWS_ORPHAN_SWEEP_INTERVAL_SECONDS?: string;
-  CRABBOX_AWS_ORPHAN_SWEEP_GRACE_SECONDS?: string;
-  CRABBOX_AWS_MAC_HOST_SWEEP_RELEASE?: string;
-  CRABBOX_CAPACITY_REGIONS?: string;
-  CRABBOX_CAPACITY_AVAILABILITY_ZONES?: string;
-  CRABBOX_CAPACITY_HINTS?: string;
-  CRABBOX_CAPACITY_LARGE_CLASSES?: string;
-  AZURE_TENANT_ID?: string;
-  AZURE_CLIENT_ID?: string;
-  AZURE_CLIENT_SECRET?: string;
-  AZURE_SUBSCRIPTION_ID?: string;
-  CRABBOX_AZURE_LOCATION?: string;
-  CRABBOX_AZURE_REGIONS?: string;
-  CRABBOX_AZURE_RESOURCE_GROUP?: string;
-  CRABBOX_AZURE_IMAGE?: string;
-  CRABBOX_AZURE_OS_DISK?: string;
-  CRABBOX_AZURE_VNET?: string;
-  CRABBOX_AZURE_SUBNET?: string;
-  CRABBOX_AZURE_NSG?: string;
-  CRABBOX_AZURE_SSH_CIDRS?: string;
-  GCP_PROJECT_ID?: string;
-  GCP_CLIENT_EMAIL?: string;
-  GCP_PRIVATE_KEY?: string;
-  CRABBOX_GCP_PROJECT?: string;
-  CRABBOX_GCP_ZONE?: string;
-  CRABBOX_GCP_IMAGE?: string;
-  CRABBOX_GCP_NETWORK?: string;
-  CRABBOX_GCP_SUBNET?: string;
-  CRABBOX_GCP_TAGS?: string;
-  CRABBOX_GCP_SSH_CIDRS?: string;
-  CRABBOX_GCP_ROOT_GB?: string;
-  CRABBOX_GCP_SERVICE_ACCOUNT?: string;
   CRABBOX_SHARED_TOKEN?: string;
-  CRABBOX_SHARED_OWNER?: string;
   CRABBOX_ADMIN_TOKEN?: string;
   CRABBOX_SESSION_SECRET?: string;
   CRABBOX_GITHUB_CLIENT_ID?: string;
@@ -67,27 +29,9 @@ export interface Env {
   CRABBOX_MAX_ACTIVE_LEASES?: string;
   CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER?: string;
   CRABBOX_MAX_ACTIVE_LEASES_PER_ORG?: string;
-  CRABBOX_CAPACITY_ADMIN_OWNERS?: string;
-  CRABBOX_MAX_ACTIVE_LEASES_PER_CAPACITY_ADMIN?: string;
   CRABBOX_MAX_MONTHLY_USD?: string;
   CRABBOX_MAX_MONTHLY_USD_PER_OWNER?: string;
   CRABBOX_MAX_MONTHLY_USD_PER_ORG?: string;
-  CRABBOX_TAILSCALE_ENABLED?: string;
-  CRABBOX_TAILSCALE_CLIENT_ID?: string;
-  CRABBOX_TAILSCALE_CLIENT_SECRET?: string;
-  CRABBOX_TAILSCALE_TAILNET?: string;
-  CRABBOX_TAILSCALE_TAGS?: string;
-  CRABBOX_ARTIFACTS_BACKEND?: string;
-  CRABBOX_ARTIFACTS_BUCKET?: string;
-  CRABBOX_ARTIFACTS_PREFIX?: string;
-  CRABBOX_ARTIFACTS_BASE_URL?: string;
-  CRABBOX_ARTIFACTS_REGION?: string;
-  CRABBOX_ARTIFACTS_ENDPOINT_URL?: string;
-  CRABBOX_ARTIFACTS_ACCESS_KEY_ID?: string;
-  CRABBOX_ARTIFACTS_SECRET_ACCESS_KEY?: string;
-  CRABBOX_ARTIFACTS_SESSION_TOKEN?: string;
-  CRABBOX_ARTIFACTS_UPLOAD_EXPIRES_SECONDS?: string;
-  CRABBOX_ARTIFACTS_URL_EXPIRES_SECONDS?: string;
 }
 
 export interface LeaseRequest {
@@ -95,59 +39,25 @@ export interface LeaseRequest {
   slug?: string;
   requestedSlug?: string;
   provider?: Provider;
-  target?: TargetOS;
-  targetOS?: TargetOS;
-  architecture?: string;
-  os?: string;
-  windowsMode?: WindowsMode;
-  desktop?: boolean;
-  desktopEnv?: string;
-  browser?: boolean;
-  code?: boolean;
-  tailscale?: boolean;
-  tailscaleTags?: string[];
-  tailscaleHostname?: string;
-  tailscaleExitNode?: string;
-  tailscaleExitNodeAllowLanAccess?: boolean;
   profile?: string;
   class?: string;
   serverType?: string;
   serverTypeExplicit?: boolean;
-  hostId?: string;
-  hostID?: string;
   location?: string;
   image?: string;
   awsRegion?: string;
   awsAMI?: string;
-  awsSnapshot?: string;
   awsSGID?: string;
   awsSubnetID?: string;
   awsProfile?: string;
   awsRootGB?: number;
   awsSSHCIDRs?: string[];
-  awsMacHostID?: string;
-  azureLocation?: string;
-  azureImage?: string;
-  azureSnapshot?: string;
-  azureOSDisk?: string;
-  gcpProject?: string;
-  gcpZone?: string;
-  gcpImage?: string;
-  gcpMachineImage?: string;
-  gcpSnapshot?: string;
-  gcpNetwork?: string;
-  gcpSubnet?: string;
-  gcpTags?: string[];
-  gcpSSHCIDRs?: string[];
-  gcpRootGB?: number;
-  gcpServiceAccount?: string;
   capacity?: {
     market?: "spot" | "on-demand";
     strategy?: "most-available" | "price-capacity-optimized" | "capacity-optimized" | "sequential";
     fallback?: string;
     regions?: string[];
     availabilityZones?: string[];
-    hints?: boolean;
   };
   sshUser?: string;
   sshPort?: string;
@@ -158,65 +68,25 @@ export interface LeaseRequest {
   idleTimeoutSeconds?: number;
   keep?: boolean;
   sshPublicKey?: string;
-  pond?: string;
-  exposedPorts?: string[];
+  staticSSHHost?: string;
+  staticSSHPort?: string;
 }
 
-export type Provider = "hetzner" | "aws" | "azure" | "gcp";
-export type TargetOS = "linux" | "macos" | "windows";
-export type WindowsMode = "normal" | "wsl2";
-
-export interface LeaseTelemetry {
-  capturedAt: string;
-  source?: string;
-  load1?: number;
-  load5?: number;
-  load15?: number;
-  memoryUsedBytes?: number;
-  memoryTotalBytes?: number;
-  memoryPercent?: number;
-  diskUsedBytes?: number;
-  diskTotalBytes?: number;
-  diskPercent?: number;
-  uptimeSeconds?: number;
-}
-
-export interface RunTelemetrySummary {
-  start?: LeaseTelemetry;
-  end?: LeaseTelemetry;
-  samples?: LeaseTelemetry[];
-}
+export type Provider = "hetzner" | "aws" | "static-ssh";
 
 export interface LeaseRecord {
   id: string;
   slug?: string;
   provider: Provider;
-  target: TargetOS;
-  os?: string;
-  windowsMode?: WindowsMode;
-  desktop?: boolean;
-  desktopEnv?: string;
-  browser?: boolean;
-  code?: boolean;
-  tailscale?: TailscaleMetadata;
   cloudID: string;
   region?: string;
-  providerProject?: string;
-  network?: LeaseNetworkState;
   owner: string;
   org: string;
-  share?: LeaseShare | undefined;
   profile: string;
   class: string;
   serverType: string;
   requestedServerType?: string;
-  pond?: string;
-  exposedPorts?: string[];
-  hostId?: string;
-  hostID?: string;
-  market?: string;
   provisioningAttempts?: ProvisioningAttempt[];
-  capacityHints?: CapacityHint[];
   serverID: number;
   serverName: string;
   providerKey: string;
@@ -235,84 +105,22 @@ export interface LeaseRecord {
   updatedAt: string;
   lastTouchedAt?: string;
   expiresAt: string;
-  telemetry?: LeaseTelemetry;
-  telemetryHistory?: LeaseTelemetry[];
-  cleanupAttempts?: number;
-  cleanupError?: string;
-  cleanupFailedAt?: string;
-  cleanupRetryAt?: string;
   releasedAt?: string;
   endedAt?: string;
 }
 
-export interface LeaseNetworkState {
-  sshSourceCIDRs?: string[];
-  sshSourceCIDRsComplete?: boolean;
-}
-
-export type LeaseShareRole = "use" | "manage";
-
-export interface LeaseShare {
-  users?: Record<string, LeaseShareRole> | undefined;
-  org?: LeaseShareRole | undefined;
-  updatedAt?: string | undefined;
-  updatedBy?: string | undefined;
-}
-
-export interface TailscaleMetadata {
-  enabled: boolean;
-  hostname?: string;
-  fqdn?: string;
-  ipv4?: string;
-  tags?: string[];
-  state?: "requested" | "ready" | "failed";
-  error?: string;
-  exitNode?: string;
-  exitNodeAllowLanAccess?: boolean;
-}
-
 export interface ProvisioningAttempt {
-  region?: string;
   serverType: string;
   market?: string;
   category?: string;
   message: string;
 }
 
-export interface CapacityHint {
-  code: string;
-  message: string;
-  action?: string;
-  region?: string;
-  market?: string;
-  class?: string;
-  serverType?: string;
-  regionsTried?: string[];
-}
-
 export interface ProviderImage {
   id: string;
   name: string;
   state: string;
-  provider?: Provider;
-  kind?: string;
   region?: string;
-  target?: TargetOS;
-  os?: string;
-  windowsMode?: WindowsMode;
-  serverType?: string;
-  architecture?: string;
-  project?: string;
-  resourceID?: string;
-  snapshots?: string[];
-  fastSnapshotRestores?: ProviderFastSnapshotRestore[];
-}
-
-export interface ProviderFastSnapshotRestore {
-  snapshotID: string;
-  availabilityZone: string;
-  state?: string;
-  stateTransitionReason?: string;
 }
 
 export interface PromotedImageRecord extends ProviderImage {
@@ -326,12 +134,9 @@ export interface RunRecord {
   owner: string;
   org: string;
   provider: Provider;
-  target?: TargetOS;
-  windowsMode?: WindowsMode;
   class: string;
   serverType: string;
   command: string[];
-  label?: string;
   state: "running" | "succeeded" | "failed";
   phase?: string;
   exitCode?: number;
@@ -340,10 +145,7 @@ export interface RunRecord {
   durationMs?: number;
   logBytes: number;
   logTruncated: boolean;
-  blockedStage?: string;
-  retryLikely?: string;
   results?: TestResultSummary;
-  telemetry?: RunTelemetrySummary;
   startedAt: string;
   lastEventAt?: string;
   eventCount?: number;
@@ -353,12 +155,9 @@ export interface RunRecord {
 export interface RunCreateRequest {
   leaseID?: string;
   provider?: Provider;
-  target?: TargetOS;
-  windowsMode?: WindowsMode;
   class?: string;
   serverType?: string;
   command?: string[];
-  label?: string;
 }
 
 export interface RunFinishRequest {
@@ -368,61 +167,7 @@ export interface RunFinishRequest {
   log?: string;
   logChunks?: string[];
   logTruncated?: boolean;
-  blockedStage?: string;
-  retryLikely?: string;
   results?: TestResultSummary;
-  telemetry?: RunTelemetrySummary;
-}
-
-export interface RunTelemetryRequest {
-  telemetry?: Partial<LeaseTelemetry>;
-}
-
-export interface ExternalRunnerInput {
-  id?: string;
-  provider?: string;
-  status?: string;
-  repo?: string;
-  workflow?: string;
-  job?: string;
-  ref?: string;
-  createdAt?: string;
-  actionsRepo?: string;
-  actionsRunID?: string;
-  actionsRunURL?: string;
-  actionsRunStatus?: string;
-  actionsRunConclusion?: string;
-  actionsWorkflowName?: string;
-  actionsWorkflowURL?: string;
-}
-
-export interface ExternalRunnerSyncRequest {
-  provider?: string;
-  runners?: ExternalRunnerInput[];
-}
-
-export interface ExternalRunnerRecord {
-  id: string;
-  provider: string;
-  owner: string;
-  org: string;
-  status: string;
-  repo?: string;
-  workflow?: string;
-  job?: string;
-  ref?: string;
-  createdAt?: string;
-  actionsRepo?: string;
-  actionsRunID?: string;
-  actionsRunURL?: string;
-  actionsRunStatus?: string;
-  actionsRunConclusion?: string;
-  actionsWorkflowName?: string;
-  actionsWorkflowURL?: string;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  updatedAt: string;
-  stale?: boolean;
 }
 
 export interface RunEventRecord {
@@ -436,8 +181,6 @@ export interface RunEventRecord {
   leaseID?: string;
   slug?: string;
   provider?: Provider;
-  target?: TargetOS;
-  windowsMode?: WindowsMode;
   class?: string;
   serverType?: string;
   exitCode?: number;
@@ -453,8 +196,6 @@ export interface RunEventRequest {
   leaseID?: string;
   slug?: string;
   provider?: Provider;
-  target?: TargetOS;
-  windowsMode?: WindowsMode;
   class?: string;
   serverType?: string;
   exitCode?: number;
@@ -511,7 +252,6 @@ export interface MachineView {
   name: string;
   status: string;
   serverType: string;
-  hostId?: string;
   host: string;
   labels: Record<string, string>;
 }
@@ -520,11 +260,9 @@ export interface ProviderMachine {
   provider: Provider;
   id: number;
   cloudID: string;
-  region?: string;
   name: string;
   status: string;
   serverType: string;
-  hostID?: string;
   host: string;
   labels: Record<string, string>;
 }

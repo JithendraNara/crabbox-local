@@ -9,14 +9,11 @@ crabbox run --provider aws --class beast --market on-demand -- pnpm check
 crabbox run --id blue-lobster --shell 'pnpm install --frozen-lockfile && pnpm test'
 crabbox run --id cbx_abcdef123456 --junit junit.xml -- go test ./...
 crabbox run --provider blacksmith-testbox --blacksmith-workflow .github/workflows/ci-check-testbox.yml --blacksmith-job test -- pnpm test
-crabbox run --provider static-ssh -- pnpm test
 ```
 
 If `--id` is omitted, Crabbox creates a fresh non-kept lease and releases it when the command exits. `--id` accepts the stable `cbx_...` ID or the active friendly slug.
 
 With `--provider blacksmith-testbox`, `--id` accepts a Blacksmith `tbx_...` ID or a local Crabbox slug. Crabbox forwards the command to `blacksmith testbox run`, delegates sync to Blacksmith, and prints `sync=delegated` in the final timing summary.
-
-With `--provider static-ssh`, `--id` resolves from local claim files (created by `warmup`). No cloud provisioning occurs — Crabbox connects to the configured host over SSH, syncs via rsync, and runs the command directly on the static machine.
 
 When the lease has been hydrated by `crabbox actions hydrate`, `run` reads the remote marker under `$HOME/.crabbox/actions`, syncs into the workflow's `$GITHUB_WORKSPACE`, and sources the non-secret env file written by the workflow. That preserves the setup the workflow performed: checkout path, installed dependencies, service containers, caches, runner temp/toolcache paths, and any project-specific preparation. GitHub secrets and OIDC request tokens remain workflow-step scoped unless the project explicitly persists its own short-lived credentials.
 
@@ -44,7 +41,7 @@ Flags:
 
 ```text
 --id <lease-id-or-slug>
---provider hetzner|aws|static-ssh|blacksmith-testbox
+--provider hetzner|aws|static-ssh|static-ssh|blacksmith-testbox
 --profile <name>
 --class <name>
 --type <provider-type>
