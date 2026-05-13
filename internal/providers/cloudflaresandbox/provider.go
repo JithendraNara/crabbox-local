@@ -15,7 +15,7 @@ type Provider struct{}
 func (Provider) Name() string { return providerName }
 
 func (Provider) Aliases() []string {
-	return []string{"cf-sandbox", "cf-containers", "cloudflare", "cloudflare-containers"}
+	return []string{"cloudflare-containers", "cloudflare", legacyProviderName, "cf-sandbox"}
 }
 
 func (Provider) Spec() core.ProviderSpec {

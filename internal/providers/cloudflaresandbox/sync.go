@@ -61,7 +61,7 @@ func (b *cloudflareSandboxBackend) syncWorkspace(ctx context.Context, client *cl
 		{Name: "prepare", Ms: prepareDuration.Milliseconds()},
 		{Name: "archive", Ms: archiveDuration.Milliseconds()},
 		{Name: "upload", Ms: uploadDuration.Milliseconds()},
-		{Name: "cloudflare_sandbox_sync", Ms: total.Milliseconds()},
+		{Name: "cf_containers_sync", Ms: total.Milliseconds()},
 	}, total, nil
 }
 
@@ -80,10 +80,10 @@ func (b *cloudflareSandboxBackend) execShell(ctx context.Context, client *cloudf
 		TimeoutMS: durationMillisecondsCeil(b.cfg.TTL),
 	}, stdout, b.rt.Stderr)
 	if err != nil {
-		return fmt.Errorf("cloudflare-sandbox exec %q: %w", command, err)
+		return fmt.Errorf("%s exec %q: %w", providerName, command, err)
 	}
 	if code != 0 {
-		return exit(code, "cloudflare-sandbox exec %q exited %d", command, code)
+		return exit(code, "%s exec %q exited %d", providerName, command, code)
 	}
 	return nil
 }
@@ -91,7 +91,7 @@ func (b *cloudflareSandboxBackend) execShell(ctx context.Context, client *cloudf
 func createCloudflareSandboxSyncArchive(ctx context.Context, repo Repo, manifest SyncManifest, stderr io.Writer) (*os.File, error) {
 	var input bytes.Buffer
 	input.Write(manifest.NUL())
-	archive, err := os.CreateTemp("", "crabbox-cloudflare-sandbox-sync-*.tgz")
+	archive, err := os.CreateTemp("", "crabbox-cf-containers-sync-*.tgz")
 	if err != nil {
 		return nil, fmt.Errorf("create sync archive temp file: %w", err)
 	}

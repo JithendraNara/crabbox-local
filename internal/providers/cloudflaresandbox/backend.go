@@ -37,7 +37,7 @@ func (b *cloudflareSandboxBackend) Warmup(ctx context.Context, req WarmupRequest
 	}
 	fmt.Fprintf(b.rt.Stdout, "leased %s slug=%s provider=%s sandbox=%s\n", leaseID, slug, providerName, sandbox.ID)
 	if !req.Keep {
-		fmt.Fprintf(b.rt.Stderr, "warning: cloudflare-sandbox warmup keeps the sandbox until explicit stop\n")
+		fmt.Fprintf(b.rt.Stderr, "warning: %s warmup keeps the container until explicit stop\n", providerName)
 	}
 	total := b.now().Sub(started)
 	fmt.Fprintf(b.rt.Stdout, "warmup complete total=%s\n", total.Round(time.Millisecond))
@@ -90,7 +90,7 @@ func (b *cloudflareSandboxBackend) Run(ctx context.Context, req RunRequest) (Run
 				return
 			}
 			if err := client.destroySandbox(context.Background(), sandboxID); err != nil {
-				fmt.Fprintf(b.rt.Stderr, "warning: cloudflare-sandbox destroy failed for %s: %v\n", sandboxID, err)
+				fmt.Fprintf(b.rt.Stderr, "warning: %s destroy failed for %s: %v\n", providerName, sandboxID, err)
 				return
 			}
 			removeLeaseClaim(leaseID)
@@ -150,9 +150,9 @@ func (b *cloudflareSandboxBackend) Run(ctx context.Context, req RunRequest) (Run
 		SyncDelegated: true,
 	}
 	if req.NoSync {
-		fmt.Fprintf(b.rt.Stderr, "cloudflare-sandbox run summary sync_skipped=true command=%s total=%s exit=%d\n", result.Command.Round(time.Millisecond), result.Total.Round(time.Millisecond), result.ExitCode)
+		fmt.Fprintf(b.rt.Stderr, "%s run summary sync_skipped=true command=%s total=%s exit=%d\n", providerName, result.Command.Round(time.Millisecond), result.Total.Round(time.Millisecond), result.ExitCode)
 	} else {
-		fmt.Fprintf(b.rt.Stderr, "cloudflare-sandbox run summary sync=%s command=%s total=%s exit=%d\n", syncDuration.Round(time.Millisecond), result.Command.Round(time.Millisecond), result.Total.Round(time.Millisecond), result.ExitCode)
+		fmt.Fprintf(b.rt.Stderr, "%s run summary sync=%s command=%s total=%s exit=%d\n", providerName, syncDuration.Round(time.Millisecond), result.Command.Round(time.Millisecond), result.Total.Round(time.Millisecond), result.ExitCode)
 	}
 	if req.TimingJSON {
 		if err := writeTimingJSON(b.rt.Stderr, timingReport{
@@ -172,11 +172,11 @@ func (b *cloudflareSandboxBackend) Run(ctx context.Context, req RunRequest) (Run
 	}
 	if commandErr != nil {
 		handleDelegatedRunFailure(b.rt.Stderr, req, providerName, leaseID, slug, b.cfg.IdleTimeout, b.cfg.TTL, acquired, &shouldStop)
-		return result, ExitError{Code: 1, Message: fmt.Sprintf("cloudflare-sandbox run failed: %v", commandErr)}
+		return result, ExitError{Code: 1, Message: fmt.Sprintf("%s run failed: %v", providerName, commandErr)}
 	}
 	if result.ExitCode != 0 {
 		handleDelegatedRunFailure(b.rt.Stderr, req, providerName, leaseID, slug, b.cfg.IdleTimeout, b.cfg.TTL, acquired, &shouldStop)
-		return result, ExitError{Code: result.ExitCode, Message: fmt.Sprintf("cloudflare-sandbox run exited %d", result.ExitCode)}
+		return result, ExitError{Code: result.ExitCode, Message: fmt.Sprintf("%s run exited %d", providerName, result.ExitCode)}
 	}
 	return result, nil
 }
@@ -221,7 +221,7 @@ func (b *cloudflareSandboxBackend) Status(ctx context.Context, req StatusRequest
 			return view, nil
 		}
 		if b.now().After(deadline) {
-			return StatusView{}, exit(5, "timed out waiting for cloudflare sandbox %s to become ready", sandboxID)
+			return StatusView{}, exit(5, "timed out waiting for %s container %s to become ready", providerName, sandboxID)
 		}
 		select {
 		case <-ctx.Done():
@@ -263,30 +263,30 @@ func (b *cloudflareSandboxBackend) Cleanup(ctx context.Context, req CleanupReque
 		if err != nil {
 			if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
 				if req.DryRun {
-					fmt.Fprintf(b.rt.Stdout, "would remove stale cloudflare-sandbox claim %s slug=%s reason=not-found\n", claim.LeaseID, blank(claim.Slug, "-"))
+					fmt.Fprintf(b.rt.Stdout, "would remove stale %s claim %s slug=%s reason=not-found\n", providerName, claim.LeaseID, blank(claim.Slug, "-"))
 					continue
 				}
 				removeLeaseClaim(claim.LeaseID)
 				removed++
-				fmt.Fprintf(b.rt.Stdout, "removed stale cloudflare-sandbox claim %s slug=%s reason=not-found\n", claim.LeaseID, blank(claim.Slug, "-"))
+				fmt.Fprintf(b.rt.Stdout, "removed stale %s claim %s slug=%s reason=not-found\n", providerName, claim.LeaseID, blank(claim.Slug, "-"))
 				continue
 			}
-			fmt.Fprintf(b.rt.Stderr, "warning: cloudflare-sandbox status failed for %s: %v\n", claim.LeaseID, err)
+			fmt.Fprintf(b.rt.Stderr, "warning: %s status failed for %s: %v\n", providerName, claim.LeaseID, err)
 			continue
 		}
 		if !cloudflareSandboxTerminalState(sandbox.State) {
 			continue
 		}
 		if req.DryRun {
-			fmt.Fprintf(b.rt.Stdout, "would remove stale cloudflare-sandbox claim %s slug=%s state=%s\n", claim.LeaseID, blank(claim.Slug, "-"), sandbox.State)
+			fmt.Fprintf(b.rt.Stdout, "would remove stale %s claim %s slug=%s state=%s\n", providerName, claim.LeaseID, blank(claim.Slug, "-"), sandbox.State)
 			continue
 		}
 		removeLeaseClaim(claim.LeaseID)
 		removed++
-		fmt.Fprintf(b.rt.Stdout, "removed stale cloudflare-sandbox claim %s slug=%s state=%s\n", claim.LeaseID, blank(claim.Slug, "-"), sandbox.State)
+		fmt.Fprintf(b.rt.Stdout, "removed stale %s claim %s slug=%s state=%s\n", providerName, claim.LeaseID, blank(claim.Slug, "-"), sandbox.State)
 	}
 	if !req.DryRun {
-		fmt.Fprintf(b.rt.Stdout, "cloudflare-sandbox cleanup removed=%d checked=%d\n", removed, len(claims))
+		fmt.Fprintf(b.rt.Stdout, "%s cleanup removed=%d checked=%d\n", providerName, removed, len(claims))
 	}
 	return nil
 }
@@ -326,16 +326,18 @@ func (b *cloudflareSandboxBackend) createSandbox(ctx context.Context, client *cl
 }
 
 func (b *cloudflareSandboxBackend) resolveSandboxID(identifier string) (string, string, string, error) {
-	claim, ok, err := resolveLeaseClaimForProvider(identifier, providerName)
-	if err != nil {
-		return "", "", "", err
-	}
-	if ok {
-		return claim.LeaseID, claim.LeaseID, blank(claim.Slug, newLeaseSlug(claim.LeaseID)), nil
+	for _, provider := range []string{providerName, legacyProviderName} {
+		claim, ok, err := resolveLeaseClaimForProvider(identifier, provider)
+		if err != nil {
+			return "", "", "", err
+		}
+		if ok {
+			return claim.LeaseID, claim.LeaseID, blank(claim.Slug, newLeaseSlug(claim.LeaseID)), nil
+		}
 	}
 	value := strings.TrimSpace(identifier)
 	if value == "" {
-		return "", "", "", exit(2, "cloudflare-sandbox id is required")
+		return "", "", "", exit(2, "%s id is required", providerName)
 	}
 	return value, value, newLeaseSlug(value), nil
 }
@@ -364,11 +366,11 @@ func cloudflareSandboxWorkdir(cfg Config) (string, error) {
 	workdir := blank(strings.TrimSpace(cfg.CloudflareSandbox.Workdir), "/workspace/crabbox")
 	clean := path.Clean(workdir)
 	if !strings.HasPrefix(clean, "/") {
-		return "", exit(2, "cloudflare-sandbox workdir %q must resolve to an absolute path", workdir)
+		return "", exit(2, "%s workdir %q must resolve to an absolute path", providerName, workdir)
 	}
 	switch clean {
 	case "/", "/bin", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc", "/root", "/sbin", "/sys", "/tmp", "/usr", "/var", "/workspace":
-		return "", exit(2, "cloudflare-sandbox workdir %q is too broad; choose a dedicated subdirectory", clean)
+		return "", exit(2, "%s workdir %q is too broad; choose a dedicated subdirectory", providerName, clean)
 	}
 	return clean, nil
 }
@@ -382,7 +384,7 @@ func sandboxStatusView(leaseID, slug string, sandbox cloudflareSandbox) StatusVi
 		TargetOS:   targetLinux,
 		State:      server.Status,
 		ServerID:   sandbox.ID,
-		ServerType: "cloudflare-sandbox",
+		ServerType: providerName,
 		Network:    networkPublic,
 		Ready:      cloudflareSandboxReady(server.Status),
 		Labels:     server.Labels,
@@ -407,7 +409,7 @@ func sandboxToServer(leaseID, slug string, sandbox cloudflareSandbox) Server {
 		Status:   state,
 		Labels:   labels,
 	}
-	server.ServerType.Name = "cloudflare-sandbox"
+	server.ServerType.Name = providerName
 	return server
 }
 
@@ -426,7 +428,7 @@ func claimToServer(claim localClaim, state string) Server {
 		Status:   state,
 		Labels:   labels,
 	}
-	server.ServerType.Name = "cloudflare-sandbox"
+	server.ServerType.Name = providerName
 	return server
 }
 
@@ -500,7 +502,7 @@ func localCloudflareSandboxClaims() ([]localClaim, error) {
 		if err := json.Unmarshal(data, &claim); err != nil {
 			return nil, exit(2, "parse claim %s: %v", entry.Name(), err)
 		}
-		if claim.Provider == providerName {
+		if claim.Provider == providerName || claim.Provider == legacyProviderName {
 			claims = append(claims, claim)
 		}
 	}

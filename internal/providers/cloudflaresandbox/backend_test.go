@@ -23,7 +23,7 @@ func TestCloudflareSandboxProviderSpec(t *testing.T) {
 		t.Fatalf("spec.Features = %#v, want archive-sync", spec.Features)
 	}
 	aliases := Provider{}.Aliases()
-	for _, want := range []string{"cf-sandbox", "cf-containers", "cloudflare", "cloudflare-containers"} {
+	for _, want := range []string{"cloudflare-containers", "cloudflare", "cloudflare-sandbox", "cf-sandbox"} {
 		if !containsString(aliases, want) {
 			t.Fatalf("aliases = %#v, missing %q", aliases, want)
 		}
@@ -62,6 +62,43 @@ func TestCloudflareSandboxTokenFlagDoesNotDefaultToConfiguredSecret(t *testing.T
 	values := RegisterCloudflareSandboxProviderFlags(fs, cfg).(cloudflareSandboxFlagValues)
 	if got := *values.Token; got != "" {
 		t.Fatalf("token flag default = %q, want empty", got)
+	}
+	if got := *values.LegacyToken; got != "" {
+		t.Fatalf("legacy token flag default = %q, want empty", got)
+	}
+}
+
+func TestCloudflareSandboxFlagsPreferCFContainersNames(t *testing.T) {
+	cfg := Config{Provider: providerName}
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	values := RegisterCloudflareSandboxProviderFlags(fs, cfg)
+	err := fs.Parse([]string{
+		"--cloudflare-sandbox-url", "https://legacy.example",
+		"--cf-containers-url", "https://current.example",
+		"--cf-containers-token", "token",
+		"--cf-containers-workdir", "/workspace/current",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyCloudflareSandboxProviderFlags(&cfg, fs, values); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CloudflareSandbox.APIURL != "https://current.example" || cfg.CloudflareSandbox.Token != "token" || cfg.CloudflareSandbox.Workdir != "/workspace/current" {
+		t.Fatalf("cf containers flags not applied: %#v", cfg.CloudflareSandbox)
+	}
+}
+
+func TestCloudflareSandboxLegacyAliasRejectsResourceFlags(t *testing.T) {
+	cfg := Config{Provider: legacyProviderName}
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	_ = fs.String("class", "", "")
+	values := RegisterCloudflareSandboxProviderFlags(fs, cfg)
+	if err := fs.Parse([]string{"--class", "standard"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyCloudflareSandboxProviderFlags(&cfg, fs, values); err == nil {
+		t.Fatal("expected legacy provider alias to reject --class")
 	}
 }
 
@@ -130,7 +167,7 @@ func TestCloudflareSandboxStatusPrunesExpiredClaim(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := claimLeaseForRepoProvider("cbx_expired", "blue-lobster", providerName, t.TempDir(), time.Hour, false); err != nil {
+	if err := claimLeaseForRepoProvider("cbx_expired", "blue-lobster", legacyProviderName, t.TempDir(), time.Hour, false); err != nil {
 		t.Fatal(err)
 	}
 	backend := cloudflareSandboxBackend{
@@ -150,7 +187,7 @@ func TestCloudflareSandboxStatusPrunesExpiredClaim(t *testing.T) {
 	if view.State != "expired" {
 		t.Fatalf("state = %q, want expired", view.State)
 	}
-	if _, ok, err := resolveLeaseClaimForProvider("blue-lobster", providerName); err != nil || ok {
+	if _, ok, err := resolveLeaseClaimForProvider("blue-lobster", legacyProviderName); err != nil || ok {
 		t.Fatalf("claim resolved after expired status ok=%t err=%v", ok, err)
 	}
 }
@@ -170,7 +207,7 @@ func TestCloudflareSandboxCleanupPrunesTerminalClaims(t *testing.T) {
 	defer server.Close()
 
 	repo := t.TempDir()
-	if err := claimLeaseForRepoProvider("cbx_expired", "blue-lobster", providerName, repo, time.Hour, false); err != nil {
+	if err := claimLeaseForRepoProvider("cbx_expired", "blue-lobster", legacyProviderName, repo, time.Hour, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := claimLeaseForRepoProvider("cbx_running", "green-lobster", providerName, repo, time.Hour, false); err != nil {
@@ -190,7 +227,7 @@ func TestCloudflareSandboxCleanupPrunesTerminalClaims(t *testing.T) {
 	if err := backend.Cleanup(context.Background(), CleanupRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := resolveLeaseClaimForProvider("blue-lobster", providerName); err != nil || ok {
+	if _, ok, err := resolveLeaseClaimForProvider("blue-lobster", legacyProviderName); err != nil || ok {
 		t.Fatalf("expired claim resolved after cleanup ok=%t err=%v", ok, err)
 	}
 	if _, ok, err := resolveLeaseClaimForProvider("green-lobster", providerName); err != nil || !ok {

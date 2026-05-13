@@ -59,15 +59,15 @@ type execStreamEvent struct {
 func newCloudflareSandboxClient(cfg Config, rt Runtime) (*cloudflareSandboxClient, error) {
 	apiURL := strings.TrimSpace(cfg.CloudflareSandbox.APIURL)
 	if apiURL == "" {
-		return nil, exit(2, "cloudflare-sandbox requires --cloudflare-sandbox-url or CRABBOX_CLOUDFLARE_SANDBOX_URL")
+		return nil, exit(2, "%s requires --cf-containers-url or CRABBOX_CF_CONTAINERS_URL", providerName)
 	}
 	token := strings.TrimSpace(cfg.CloudflareSandbox.Token)
 	if token == "" {
-		return nil, exit(2, "cloudflare-sandbox requires --cloudflare-sandbox-token or CRABBOX_CLOUDFLARE_SANDBOX_TOKEN")
+		return nil, exit(2, "%s requires --cf-containers-token or CRABBOX_CF_CONTAINERS_TOKEN", providerName)
 	}
 	parsed, err := url.Parse(apiURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, exit(2, "cloudflare-sandbox url %q is invalid", apiURL)
+		return nil, exit(2, "%s url %q is invalid", providerName, apiURL)
 	}
 	httpClient := rt.HTTP
 	if httpClient == nil {
@@ -141,7 +141,7 @@ func (c *cloudflareSandboxClient) execStream(ctx context.Context, sandboxID stri
 	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if mediaType != "" && mediaType != "application/x-ndjson" && mediaType != "application/jsonl" {
-		return 0, fmt.Errorf("unexpected cloudflare-sandbox stream content-type %q", resp.Header.Get("Content-Type"))
+		return 0, fmt.Errorf("unexpected %s stream content-type %q", providerName, resp.Header.Get("Content-Type"))
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -154,7 +154,7 @@ func (c *cloudflareSandboxClient) execStream(ctx context.Context, sandboxID stri
 		}
 		var event execStreamEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			return exitCode, fmt.Errorf("decode cloudflare-sandbox stream event: %w", err)
+			return exitCode, fmt.Errorf("decode %s stream event: %w", providerName, err)
 		}
 		switch event.Type {
 		case "stdout":
@@ -178,14 +178,14 @@ func (c *cloudflareSandboxClient) execStream(ctx context.Context, sandboxID stri
 			return exitCode, errors.New(event.Error)
 		case "start":
 		default:
-			return exitCode, fmt.Errorf("unknown cloudflare-sandbox stream event %q", event.Type)
+			return exitCode, fmt.Errorf("unknown %s stream event %q", providerName, event.Type)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return exitCode, err
 	}
 	if !completed {
-		return exitCode, fmt.Errorf("cloudflare-sandbox stream ended before completion")
+		return exitCode, fmt.Errorf("%s stream ended before completion", providerName)
 	}
 	return exitCode, nil
 }
@@ -227,13 +227,13 @@ func (c *cloudflareSandboxClient) responseError(resp *http.Response) error {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
-		return fmt.Errorf("cloudflare-sandbox API %s: %s", resp.Status, payload.Error)
+		return fmt.Errorf("%s API %s: %s", providerName, resp.Status, payload.Error)
 	}
 	text := strings.TrimSpace(string(body))
 	if text == "" {
 		text = resp.Status
 	}
-	return fmt.Errorf("cloudflare-sandbox API %s: %s", resp.Status, text)
+	return fmt.Errorf("%s API %s: %s", providerName, resp.Status, text)
 }
 
 func remoteArchivePath() string {

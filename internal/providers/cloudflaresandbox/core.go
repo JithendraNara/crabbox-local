@@ -30,9 +30,10 @@ type timingReport = core.TimingReport
 type timingPhase = core.TimingPhase
 
 const (
-	providerName  = "cloudflare-sandbox"
-	targetLinux   = core.TargetLinux
-	networkPublic = core.NetworkPublic
+	providerName       = "cf-containers"
+	legacyProviderName = "cloudflare-sandbox"
+	targetLinux        = core.TargetLinux
+	networkPublic      = core.NetworkPublic
 )
 
 func exit(code int, format string, args ...any) core.ExitError {
