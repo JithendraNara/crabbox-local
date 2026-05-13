@@ -4875,7 +4875,8 @@ class AWSProvider implements CloudProvider {
             // oxlint-disable-next-line eslint/no-await-in-loop -- clean up the exact instance before any fallback.
             await client.deleteServer(server.cloudID);
           } catch (deleteError) {
-            const deleteMessage = deleteError instanceof Error ? deleteError.message : String(deleteError);
+            const deleteMessage =
+              deleteError instanceof Error ? deleteError.message : String(deleteError);
             if (!isAWSInstanceCleanedAfterReadinessFailure(waitMessage, deleteMessage)) {
               throw new Error(
                 `${waitMessage}; cleanup failed for AWS instance ${server.cloudID}: ${deleteMessage}`,

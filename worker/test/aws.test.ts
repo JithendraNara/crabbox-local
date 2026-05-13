@@ -72,8 +72,9 @@ describe("aws provider", () => {
   });
 
   it("classifies stale AWS instance ID errors", () => {
-    expect(isAWSInstanceNotFoundError("InvalidInstanceID.NotFound: The instance ID does not exist"))
-      .toBe(true);
+    expect(
+      isAWSInstanceNotFoundError("InvalidInstanceID.NotFound: The instance ID does not exist"),
+    ).toBe(true);
     expect(
       isAWSInstanceNotFoundError(
         "<Error><Code>InvalidInstanceID.NotFound</Code><Message>missing</Message></Error>",
