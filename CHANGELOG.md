@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `provider: modal` delegated runs for Modal Sandboxes through the local Modal Python client, including archive sync, env allowlist forwarding, docs, and no-live-credential tests.
 - Added native Windows support for `crabbox run --script` / `--script-stdin` and a real native Windows `--preflight` probe.
 - Added configurable `crabbox run --preflight` tool probes via `--preflight-tools`, `CRABBOX_PREFLIGHT_TOOLS`, and `run.preflightTools`.
 
