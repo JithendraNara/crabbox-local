@@ -3076,6 +3076,15 @@ export class FleetDurableObject implements DurableObject {
       );
     }
     const strategy = checkpointStrategy(input.strategy);
+    if (!strategy) {
+      return json(
+        {
+          error: "invalid_strategy",
+          message: "checkpoint strategy must be auto, disk-snapshot, or image",
+        },
+        { status: 400 },
+      );
+    }
     if (lease.provider === "azure" && strategy === "image") {
       return json(
         {
@@ -3750,7 +3759,7 @@ function hasNativeLeaseSource(config: LeaseConfig): boolean {
   );
 }
 
-function checkpointStrategy(value: string | undefined): "image" | "disk-snapshot" {
+function checkpointStrategy(value: string | undefined): "image" | "disk-snapshot" | undefined {
   switch ((value ?? "").trim().toLowerCase()) {
     case "image":
     case "ami":
@@ -3762,8 +3771,10 @@ function checkpointStrategy(value: string | undefined): "image" | "disk-snapshot
     case "snapshot":
     case "disk":
     case "disk-snapshot":
-    default:
+    case "disk_snapshot":
       return "disk-snapshot";
+    default:
+      return undefined;
   }
 }
 

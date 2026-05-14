@@ -2503,6 +2503,69 @@ describe("fleet lease identity and idle", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "unsupported_strategy" });
   });
 
+  it("rejects invalid native image strategies", async () => {
+    let created = false;
+    const storage = new MemoryStorage();
+    const fleet = testFleet(storage, {
+      aws: fakeProvider(undefined, {
+        provider: "aws",
+        onCreateImage() {
+          created = true;
+        },
+      }),
+    });
+    storage.seed(
+      "lease:cbx_000000000001",
+      testLease({
+        id: "cbx_000000000001",
+        provider: "aws",
+        cloudID: "i-000000000001",
+      }),
+    );
+
+    const response = await fleet.fetch(
+      request("POST", "/v1/images", {
+        headers: { "x-crabbox-admin": "true" },
+        body: { leaseID: "cbx_000000000001", name: "After Install", strategy: "snapshopt" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(created).toBe(false);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid_strategy" });
+  });
+
+  it("keeps accepting disk_snapshot as a native image strategy alias", async () => {
+    let strategy = "";
+    const storage = new MemoryStorage();
+    const fleet = testFleet(storage, {
+      aws: fakeProvider(undefined, {
+        provider: "aws",
+        onCreateImage(_sourceID, _name, receivedStrategy) {
+          strategy = receivedStrategy;
+        },
+      }),
+    });
+    storage.seed(
+      "lease:cbx_000000000001",
+      testLease({
+        id: "cbx_000000000001",
+        provider: "aws",
+        cloudID: "i-000000000001",
+      }),
+    );
+
+    const response = await fleet.fetch(
+      request("POST", "/v1/images", {
+        headers: { "x-crabbox-admin": "true" },
+        body: { leaseID: "cbx_000000000001", name: "After Install", strategy: "disk_snapshot" },
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(strategy).toBe("disk-snapshot");
+  });
+
   it("deletes provider-native images using provider query routing", async () => {
     let azureDeleted = "";
     let azureDeletedKind = "";

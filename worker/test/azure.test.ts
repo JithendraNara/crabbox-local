@@ -22,6 +22,10 @@ const baseEnv: Env = {
   AZURE_SUBSCRIPTION_ID: "sub",
 };
 
+function isAzureLoginURL(value: string): boolean {
+  return new URL(value).hostname === "login.microsoftonline.com";
+}
+
 function testLeaseConfig(overrides: Partial<LeaseConfig> = {}): LeaseConfig {
   return {
     provider: "azure",
@@ -177,7 +181,7 @@ describe("azure provider", () => {
     const deletes: string[] = [];
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
@@ -214,7 +218,7 @@ describe("azure provider", () => {
     const deletes: string[] = [];
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
@@ -270,7 +274,7 @@ describe("azure provider", () => {
     const bodies: unknown[] = [];
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
@@ -409,7 +413,7 @@ describe("azure provider", () => {
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       const pathname = new URL(url).pathname;
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
@@ -509,7 +513,7 @@ describe("azure provider", () => {
     let nsgBody: { properties?: { securityRules?: Array<{ name?: string }> } } | undefined;
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
@@ -554,7 +558,7 @@ describe("azure provider", () => {
     let tokenMints = 0;
     const fakeFetch = ((input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         tokenMints += 1;
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), {
@@ -598,7 +602,7 @@ describe("azure provider", () => {
     const client = new AzureClient(baseEnv);
     const fakeFetch = ((input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("login.microsoftonline.com")) {
+      if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );

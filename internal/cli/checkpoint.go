@@ -627,6 +627,9 @@ func (a App) createNativeCheckpoint(ctx context.Context, cfg Config, server Serv
 	if _, ok := nativeCheckpointKind(cfg, server, target, strategy); !ok {
 		return CoordinatorImage{}, exit(2, "native checkpoints currently support brokered AWS, Azure, and GCP Linux leases only")
 	}
+	if server.Provider == "azure" && strategy == checkpointStrategyImage {
+		return CoordinatorImage{}, exit(2, "Azure managed images require a stopped/generalized source VM; use --strategy disk-snapshot for active Azure leases")
+	}
 	if name == "" {
 		name = defaultNativeImageName(leaseID, repoName)
 	}

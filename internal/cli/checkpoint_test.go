@@ -225,6 +225,36 @@ func TestCreateAWSAMICheckpointValidatesAdminBeforeCloudInit(t *testing.T) {
 	}
 }
 
+func TestCreateNativeCheckpointRejectsAzureImageBeforeAdminAndCloudInit(t *testing.T) {
+	t.Setenv("CRABBOX_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("CRABBOX_COORDINATOR", "https://coordinator.example")
+	t.Setenv("CRABBOX_COORDINATOR_ADMIN_TOKEN", "")
+	t.Setenv("CRABBOX_ADMIN_TOKEN", "")
+	cfg := baseConfig()
+	cfg.Coordinator = "https://coordinator.example"
+	cfg.TargetOS = targetLinux
+
+	_, err := (App{Stdout: io.Discard, Stderr: io.Discard}).createNativeCheckpoint(
+		context.Background(),
+		cfg,
+		Server{Provider: "azure", CloudID: "crabbox-source"},
+		SSHTarget{TargetOS: targetLinux},
+		"cbx_123",
+		"",
+		"repo",
+		checkpointStrategyImage,
+		true,
+		false,
+		0,
+	)
+	if err == nil {
+		t.Fatal("expected Azure image strategy to fail")
+	}
+	if !strings.Contains(err.Error(), "Azure managed images require") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestRemotePrepareAWSAMICommandFlushesFilesystem(t *testing.T) {
 	cmd := remotePrepareAWSAMICommand()
 	for _, want := range []string{"cloud-init clean --logs", "sync"} {
