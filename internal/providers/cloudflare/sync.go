@@ -14,6 +14,12 @@ import (
 
 func (b *cloudflareBackend) syncWorkspace(ctx context.Context, client *cloudflareClient, sandboxID string, req RunRequest, workdir string) ([]timingPhase, time.Duration, error) {
 	start := b.now()
+	syncCtx := ctx
+	cancel := func() {}
+	if b.cfg.Sync.Timeout > 0 {
+		syncCtx, cancel = context.WithTimeout(ctx, b.cfg.Sync.Timeout)
+	}
+	defer cancel()
 	excludes, err := syncExcludes(req.Repo.Root, b.cfg)
 	if err != nil {
 		return nil, 0, err
@@ -30,12 +36,12 @@ func (b *cloudflareBackend) syncWorkspace(ctx context.Context, client *cloudflar
 	}
 	preflightDuration := b.now().Sub(preflightStarted)
 	prepareStarted := b.now()
-	if err := b.prepareWorkspace(ctx, client, sandboxID, workdir, b.cfg.Sync.Delete); err != nil {
+	if err := b.prepareWorkspace(syncCtx, client, sandboxID, workdir, b.cfg.Sync.Delete); err != nil {
 		return nil, 0, err
 	}
 	prepareDuration := b.now().Sub(prepareStarted)
 	archiveStarted := b.now()
-	archive, err := createCloudflareSyncArchive(ctx, req.Repo, manifest, b.rt.Stderr)
+	archive, err := createCloudflareSyncArchive(syncCtx, req.Repo, manifest, b.rt.Stderr)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -47,20 +53,20 @@ func (b *cloudflareBackend) syncWorkspace(ctx context.Context, client *cloudflar
 	}
 	archiveDuration := b.now().Sub(archiveStarted)
 	diskStarted := b.now()
-	if err := b.checkRemoteDiskForSync(ctx, client, sandboxID, workdir, manifest.Bytes, archiveInfo.Size()); err != nil {
+	if err := b.checkRemoteDiskForSync(syncCtx, client, sandboxID, workdir, manifest.Bytes, archiveInfo.Size()); err != nil {
 		return nil, 0, err
 	}
 	diskDuration := b.now().Sub(diskStarted)
 	uploadStarted := b.now()
 	remoteArchive := remoteArchivePath()
-	if err := client.uploadFile(ctx, sandboxID, archive.Name(), remoteArchive); err != nil {
+	if err := client.uploadFile(syncCtx, sandboxID, archive.Name(), remoteArchive); err != nil {
 		return nil, 0, fmt.Errorf("upload archive: %w", err)
 	}
 	extract := strings.Join([]string{
 		"tar -xzf " + shellQuote(remoteArchive) + " -C " + shellQuote(workdir),
 		"rm -f " + shellQuote(remoteArchive),
 	}, " && ")
-	if err := b.execShell(ctx, client, sandboxID, extract, io.Discard); err != nil {
+	if err := b.execShell(syncCtx, client, sandboxID, extract, io.Discard); err != nil {
 		return nil, 0, err
 	}
 	uploadDuration := b.now().Sub(uploadStarted)

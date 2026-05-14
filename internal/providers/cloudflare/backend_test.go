@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -214,6 +215,49 @@ func TestCloudflareClientExecStream(t *testing.T) {
 	}
 	if stderr.String() != "warn\n" {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestCloudflareClientUploadSendsContentLength(t *testing.T) {
+	var gotLength int64
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sandboxes/cbx_test/files" {
+			http.NotFound(w, r)
+			return
+		}
+		gotLength = r.ContentLength
+		gotPath = r.URL.Query().Get("path")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upload body: %v", err)
+		}
+		if string(body) != "archive" {
+			t.Fatalf("upload body = %q, want archive", body)
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{}
+	cfg.Cloudflare.APIURL = server.URL
+	cfg.Cloudflare.Token = "token"
+	client, err := newCloudflareClient(cfg, Runtime{HTTP: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := t.TempDir() + "/archive.tgz"
+	if err := os.WriteFile(local, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.uploadFile(context.Background(), "cbx_test", local, "/tmp/archive.tgz"); err != nil {
+		t.Fatal(err)
+	}
+	if gotLength != int64(len("archive")) {
+		t.Fatalf("ContentLength = %d, want %d", gotLength, len("archive"))
+	}
+	if gotPath != "/tmp/archive.tgz" {
+		t.Fatalf("upload path = %q, want /tmp/archive.tgz", gotPath)
 	}
 }
 

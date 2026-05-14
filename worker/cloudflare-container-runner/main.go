@@ -21,6 +21,7 @@ import (
 // Cloudflare can truncate the final NDJSON event when a response opens and
 // closes almost immediately, so keep very short exec streams alive briefly.
 const minStreamLifetime = 75 * time.Millisecond
+const finalStreamFlushDelay = 100 * time.Millisecond
 const streamHeartbeatInterval = 15 * time.Second
 
 type execRequest struct {
@@ -141,6 +142,7 @@ func writeCompleteAfterMinimumLifetime(writer *eventWriter, started time.Time, e
 		time.Sleep(remaining)
 	}
 	writer.write(streamEvent{Type: "complete", ExitCode: &exitCode})
+	time.Sleep(finalStreamFlushDelay)
 }
 
 func streamHeartbeat(done <-chan struct{}, writer *eventWriter) {

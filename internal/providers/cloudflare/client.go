@@ -113,11 +113,16 @@ func (c *cloudflareClient) uploadFile(ctx context.Context, sandboxID, localPath,
 		return fmt.Errorf("open upload file: %w", err)
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat upload file: %w", err)
+	}
 	endpoint := "/v1/sandboxes/" + url.PathEscape(sandboxID) + "/files?path=" + url.QueryEscape(remotePath)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+endpoint, file)
 	if err != nil {
 		return err
 	}
+	httpReq.ContentLength = info.Size()
 	httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	httpReq.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := c.http.Do(httpReq)
