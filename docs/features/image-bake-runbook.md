@@ -228,7 +228,9 @@ candidate-only, and promoted-image runs; the script refuses to release a
 pre-existing host unless `CRABBOX_MACOS_RELEASE_EXISTING_HOST=1` is also set.
 Every run writes `.crabbox/macos-image-smoke/<image-name>/summary.json` with
 the current phase, host id, lease ids, AMI id when available, and artifact
-paths. Override the directory with `CRABBOX_MACOS_ARTIFACT_DIR`.
+paths. It also preserves host offering/list/dry-run, allocation, image create,
+and image promotion evidence under the run's `evidence/` directory. Override
+the directory with `CRABBOX_MACOS_ARTIFACT_DIR`.
 
 If an available EC2 Mac Dedicated Host already exists, the script still stops
 after preflight unless `CRABBOX_MACOS_RUN=1` or `CRABBOX_MACOS_ALLOCATE=1` is

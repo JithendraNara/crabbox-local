@@ -23,6 +23,7 @@ keep_lease="${CRABBOX_MACOS_KEEP_LEASE:-0}"
 release_host="${CRABBOX_MACOS_RELEASE_HOST:-0}"
 artifact_root="${CRABBOX_MACOS_ARTIFACT_DIR:-$ROOT/.crabbox/macos-image-smoke/$image_name}"
 summary_file="$artifact_root/summary.json"
+evidence_dir="$artifact_root/evidence"
 
 source_lease=""
 candidate_lease=""
@@ -37,6 +38,13 @@ host_released=0
 ami_id=""
 summary_result=""
 summary_phase="init"
+blocker_message=""
+offerings_log=""
+hosts_log=""
+dry_log=""
+allocate_log=""
+image_create_log=""
+image_promote_log=""
 
 run() {
   printf '+'
@@ -102,6 +110,13 @@ write_summary() {
     --arg createImage "$create_image" \
     --arg promote "$promote" \
     --arg amiID "$ami_id" \
+    --arg blockerMessage "$blocker_message" \
+    --arg offeringsLog "$offerings_log" \
+    --arg hostsLog "$hosts_log" \
+    --arg dryLog "$dry_log" \
+    --arg allocateLog "$allocate_log" \
+    --arg imageCreateLog "$image_create_log" \
+    --arg imagePromoteLog "$image_promote_log" \
     '{
       generatedAt: $generatedAt,
       result: $result,
@@ -127,10 +142,21 @@ write_summary() {
         promoteRequested: ($promote == "1"),
         amiId: $amiID
       },
+      blocker: {
+        message: $blockerMessage
+      },
       artifacts: {
         source: ($artifactRoot + "/source"),
         candidate: ($artifactRoot + "/candidate"),
         promoted: ($artifactRoot + "/promoted")
+      },
+      evidence: {
+        hostOfferings: $offeringsLog,
+        hostList: $hostsLog,
+        hostDryRun: $dryLog,
+        hostAllocate: $allocateLog,
+        imageCreate: $imageCreateLog,
+        imagePromote: $imagePromoteLog
       }
     }' >"$summary_file"
   printf 'macOS lifecycle summary: %s\n' "$summary_file"
@@ -316,8 +342,11 @@ fi
 
 write_summary running preflight
 printf 'macOS lifecycle smoke region=%s type=%s image=%s host-wait=%s\n' "$region" "$instance_type" "$image_name" "$host_wait_timeout"
-run "$CRABBOX_BIN" admin mac-hosts offerings --region "$region" --type "$instance_type"
-hosts_json="$("$CRABBOX_BIN" admin mac-hosts list --region "$region" --type "$instance_type" --json)"
+mkdir -p "$evidence_dir"
+offerings_log="$evidence_dir/mac-host-offerings.txt"
+hosts_log="$evidence_dir/mac-host-list.json"
+run "$CRABBOX_BIN" admin mac-hosts offerings --region "$region" --type "$instance_type" | tee "$offerings_log"
+hosts_json="$("$CRABBOX_BIN" admin mac-hosts list --region "$region" --type "$instance_type" --json | tee "$hosts_log")"
 printf '%s\n' "$hosts_json" | jq .
 
 existing_host="$(
@@ -339,9 +368,10 @@ if [[ -n "$existing_host" ]]; then
   host_id="$existing_host"
 else
   summary_phase="host-dry-run"
-  dry_log="$(mktemp)"
+  dry_log="$evidence_dir/mac-host-dry-run.json"
   run_tee "$dry_log" "$CRABBOX_BIN" admin mac-hosts allocate --region "$region" --type "$instance_type" --dry-run --json
   if ! jq -e 'any(.[]; .ok == true)' "$dry_log" >/dev/null; then
+    blocker_message="$(jq -r '[.[] | select(.ok != true) | .message] | unique | join("; ")' "$dry_log")"
     printf 'macOS lifecycle blocked before paid work: EC2 Mac host dry-run did not succeed.\n' >&2
     write_summary blocked host-dry-run
     exit 1
@@ -354,10 +384,11 @@ else
   fi
 
   summary_phase="host-allocation"
-  allocate_log="$(mktemp)"
+  allocate_log="$evidence_dir/mac-host-allocate.json"
   run_tee "$allocate_log" "$CRABBOX_BIN" admin mac-hosts allocate --region "$region" --type "$instance_type" --force --json
   allocated_host="$(jq -r '.[0].id // empty' "$allocate_log")"
   if [[ -z "$allocated_host" ]]; then
+    blocker_message="mac host allocation did not return a host id"
     printf 'macOS lifecycle blocked after allocation: could not determine allocated EC2 Mac Dedicated Host id.\n' >&2
     exit 1
   fi
@@ -393,10 +424,12 @@ if [[ "$create_image" != "1" ]]; then
 fi
 
 summary_phase="image-create"
-image_json="$("$CRABBOX_BIN" image create --id "$source_lease" --name "$image_name" --no-reboot=false --wait --wait-timeout "$image_wait_timeout" --json)"
+image_create_log="$evidence_dir/image-create.json"
+image_json="$("$CRABBOX_BIN" image create --id "$source_lease" --name "$image_name" --no-reboot=false --wait --wait-timeout "$image_wait_timeout" --json | tee "$image_create_log")"
 printf '%s\n' "$image_json" | jq .
 ami_id="$(printf '%s\n' "$image_json" | jq -r '.id // .image.id // empty')"
 if [[ -z "$ami_id" ]]; then
+  blocker_message="image create did not return an AMI id"
   printf 'image create did not return an AMI id\n' >&2
   exit 1
 fi
@@ -424,7 +457,8 @@ if [[ "$promote" != "1" ]]; then
 fi
 
 summary_phase="image-promote"
-run "$CRABBOX_BIN" image promote "$ami_id" --target macos --region "$region" --json
+image_promote_log="$evidence_dir/image-promote.json"
+run_tee "$image_promote_log" "$CRABBOX_BIN" image promote "$ami_id" --target macos --region "$region" --json
 stop_lease "$candidate_lease"
 candidate_lease=""
 wait_for_host_available "$allocated_host" candidate
