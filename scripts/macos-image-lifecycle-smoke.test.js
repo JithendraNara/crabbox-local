@@ -44,6 +44,10 @@ if [[ "$1" == "admin" && "$2" == "mac-hosts" ]]; then
       printf 'eu-west-1    eu-west-1b     mac2.metal\\n'
       ;;
     quota)
+      if [[ "\${CRABBOX_FAKE_QUOTA_FAIL:-0}" == "1" ]]; then
+        printf 'coordinator GET /v1/admin/mac-hosts/quota?region=eu-west-1&type=mac2.metal: http 502: {"error":"mac_host_quota_failed","message":"AWS authorization failure: coordinator AWS identity needs servicequotas:ListServiceQuotas to inspect EC2 Mac Dedicated Host quotas"}\\n' >&2
+        exit 1
+      fi
       printf '[{"serviceCode":"ec2","quotaCode":"L-MAC2","quotaName":"Running Dedicated mac2 Hosts","value":%s,"adjustable":true,"globalQuota":false,"unit":"None"}]\\n' "\${CRABBOX_FAKE_QUOTA_VALUE:-1}"
       ;;
     list)
@@ -223,7 +227,7 @@ test("macOS lifecycle smoke writes a blocked IAM summary before paid work", asyn
   await assertFileContains(summary.evidence.hostOfferings, /mac2\.metal/);
   await assertFileContains(summary.evidence.hostList, /^\[\]\n?$/);
   await assertFileContains(summary.evidence.hostDryRun, /UnauthorizedOperation/);
-  assert.equal(summary.evidence.hostQuota, null);
+  await assertFileContains(summary.evidence.hostQuota, /Running Dedicated mac2 Hosts/);
   assert.equal(summary.evidence.hostAllocate, null);
   assert.equal(summary.evidence.webvncDaemon.source, null);
   assert.equal(summary.evidence.webvncStatus.source, null);
@@ -236,6 +240,31 @@ test("macOS lifecycle smoke writes a blocked IAM summary before paid work", asyn
     evidenceFiles.filter((name) => name.startsWith("webvnc-daemon-")),
     [],
   );
+});
+
+test("macOS lifecycle smoke preserves quota IAM evidence when dry-run is also blocked", async () => {
+  const run = await setupRun();
+  const result = await runLifecycle({
+    CRABBOX_BIN: run.fake,
+    CRABBOX_FAKE_LOG: run.fakeLog,
+    CRABBOX_FAKE_STATE: run.fakeState,
+    CRABBOX_FAKE_NO_HOST: "1",
+    CRABBOX_FAKE_DRY_RUN: "deny",
+    CRABBOX_FAKE_QUOTA_FAIL: "1",
+    CRABBOX_MACOS_ARTIFACT_DIR: run.artifacts,
+    CRABBOX_MACOS_IMAGE_NAME: "quota-and-dry-run-blocked",
+    CRABBOX_MACOS_WEBVNC_START_GRACE: "0s",
+  });
+
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  const summary = await readJSON(path.join(run.artifacts, "summary.json"));
+  assert.equal(summary.result, "blocked");
+  assert.equal(summary.phase, "host-dry-run");
+  assert.match(summary.blocker.message, /ec2:AllocateHosts/);
+  assert.match(summary.blocker.message, /quota preflight also failed/);
+  assert.match(summary.blocker.remediation, /servicequotas:ListServiceQuotas/);
+  await assertFileContains(summary.evidence.hostQuota, /servicequotas:ListServiceQuotas/);
+  await assertFileContains(summary.evidence.hostDryRun, /UnauthorizedOperation/);
 });
 
 test("macOS lifecycle smoke blocks on missing Mac host quota before paid work", async () => {
