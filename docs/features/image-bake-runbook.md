@@ -202,7 +202,8 @@ scripts/macos-image-lifecycle-smoke.sh
 ```
 
 By default it only runs host offering/list/dry-run checks and stops before paid
-allocation. After the dry-run succeeds, opt in to the paid lifecycle explicitly:
+allocation or lease creation. After the dry-run succeeds, opt in to the paid
+lifecycle explicitly:
 
 ```bash
 CRABBOX_MACOS_ALLOCATE=1 \
@@ -216,6 +217,10 @@ smokes the candidate, then promotes and smokes the promoted image when
 `CRABBOX_MACOS_PROMOTE=1`. EC2 Mac Dedicated Hosts have provider-side billing
 and release constraints; the script stops leases by default but releases the
 host only when `CRABBOX_MACOS_RELEASE_HOST=1`.
+
+If an available EC2 Mac Dedicated Host already exists, the script still stops
+after preflight unless `CRABBOX_MACOS_RUN=1` or `CRABBOX_MACOS_ALLOCATE=1` is
+set.
 
 ```bash
 crabbox admin mac-hosts allocate \

@@ -11,6 +11,7 @@ ttl="${CRABBOX_MACOS_TTL:-2h}"
 idle_timeout="${CRABBOX_MACOS_IDLE_TIMEOUT:-30m}"
 image_wait_timeout="${CRABBOX_MACOS_IMAGE_WAIT_TIMEOUT:-60m}"
 allocate="${CRABBOX_MACOS_ALLOCATE:-0}"
+run_existing="${CRABBOX_MACOS_RUN:-0}"
 create_image="${CRABBOX_MACOS_CREATE_IMAGE:-1}"
 promote="${CRABBOX_MACOS_PROMOTE:-0}"
 open_webvnc="${CRABBOX_MACOS_OPEN_WEBVNC:-0}"
@@ -151,6 +152,11 @@ existing_host="$(
 )"
 
 if [[ -n "$existing_host" ]]; then
+  if [[ "$run_existing" != "1" && "$allocate" != "1" ]]; then
+    printf 'available EC2 Mac Dedicated Host found: %s\n' "$existing_host"
+    printf 'set CRABBOX_MACOS_RUN=1 to use the existing host and continue.\n'
+    exit 0
+  fi
   printf 'using existing EC2 Mac Dedicated Host: %s\n' "$existing_host"
   allocated_host="$existing_host"
 else
