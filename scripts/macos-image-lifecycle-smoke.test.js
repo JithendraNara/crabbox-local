@@ -430,6 +430,13 @@ test("macOS lifecycle smoke blocks on missing Mac host quota before paid work", 
   assert.equal(summary.result, "blocked");
   assert.equal(summary.phase, "host-quota");
   assert.match(summary.blocker.message, /quota is below 1/);
+  assert.deepEqual(summary.blocker.commands, [
+    "crabbox admin providers identity --provider aws --region eu-west-1 --json > provider-identity.json",
+    "crabbox admin hosts quota --provider aws --target macos --region eu-west-1 --type mac2.metal --json > mac-host-quota.json",
+    "scripts/request-macos-host-quota.sh --identity provider-identity.json --quota mac-host-quota.json --region eu-west-1 --profile auto",
+    "scripts/request-macos-host-quota.sh --identity provider-identity.json --quota mac-host-quota.json --region eu-west-1 --profile auto --apply",
+    "scripts/macos-host-region-preflight.sh",
+  ]);
   await assertSummaryFileContains(run.artifacts, summary.evidence.hostQuota, /Running Dedicated mac2 Hosts/);
   assert.equal(summary.evidence.hostAllocate, null);
 

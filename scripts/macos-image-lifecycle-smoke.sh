@@ -11,6 +11,7 @@ region_preflight="${CRABBOX_MACOS_REGION_PREFLIGHT:-auto}"
 region_preflight_script="${CRABBOX_MACOS_REGION_PREFLIGHT_SCRIPT:-$ROOT/scripts/macos-host-region-preflight.sh}"
 region_preflight_command="${CRABBOX_MACOS_REGION_PREFLIGHT_COMMAND:-scripts/macos-host-region-preflight.sh}"
 iam_apply_command="${CRABBOX_MACOS_IAM_APPLY_COMMAND:-scripts/apply-macos-image-iam-policy.sh}"
+quota_request_command="${CRABBOX_MACOS_QUOTA_REQUEST_COMMAND:-scripts/request-macos-host-quota.sh}"
 instance_type="${CRABBOX_MACOS_TYPE:-mac2.metal}"
 image_name="${CRABBOX_MACOS_IMAGE_NAME:-crabbox-macos-arm64-$(date -u +%Y%m%d-%H%M)}"
 ttl="${CRABBOX_MACOS_TTL:-2h}"
@@ -917,6 +918,12 @@ else
   if ! jq -e 'any(.[]; (.value // 0) >= 1)' "$quota_log" >/dev/null; then
     blocker_message="EC2 Mac Dedicated Host quota is below 1 for $instance_type in $region"
     blocker_remediation="Request or raise the AWS EC2 Mac Dedicated Host quota for the selected host family in $region, then rerun the no-spend Mac host preflight."
+    blocker_commands="$(printf '%s\n' \
+      "$CRABBOX_REMEDIATION_BIN admin providers identity --provider aws --region $region --json > provider-identity.json" \
+      "$CRABBOX_REMEDIATION_BIN admin hosts quota --provider aws --target macos --region $region --type $instance_type --json > mac-host-quota.json" \
+      "$quota_request_command --identity provider-identity.json --quota mac-host-quota.json --region $region --profile auto" \
+      "$quota_request_command --identity provider-identity.json --quota mac-host-quota.json --region $region --profile auto --apply" \
+      "$region_preflight_command")"
     printf 'macOS lifecycle blocked before paid work: %s\n' "$blocker_message" >&2
     write_summary blocked host-quota
     exit 1

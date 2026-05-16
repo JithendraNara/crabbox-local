@@ -267,6 +267,21 @@ with `ready-existing-host`, `ready-allocation`, or `blocked`; `ready-allocation`
 requires both a successful allocation dry-run and visible quota of at least one
 host for the selected type.
 
+When the only blocker is Dedicated Mac host quota, capture the same quota and
+coordinator identity evidence, then dry-run the AWS quota request before
+submitting it:
+
+```sh
+crabbox admin providers identity --provider aws --region eu-west-1 --json > provider-identity.json
+crabbox admin hosts quota --provider aws --target macos --region eu-west-1 --type mac2.metal --json > mac-host-quota.json
+scripts/request-macos-host-quota.sh --identity provider-identity.json --quota mac-host-quota.json --region eu-west-1 --profile auto
+scripts/request-macos-host-quota.sh --identity provider-identity.json --quota mac-host-quota.json --region eu-west-1 --profile auto --apply
+```
+
+The helper refuses to submit unless the selected AWS profile belongs to the same
+account as the deployed coordinator identity. It exits without making an AWS
+request when the captured quota is already at or above the requested value.
+
 The guarded macOS image lifecycle smoke also runs that region preflight
 automatically when `CRABBOX_MACOS_REGIONS` or `CRABBOX_CAPACITY_REGIONS` is set
 and `CRABBOX_MACOS_REGION` is not set. It records the region-preflight JSON in

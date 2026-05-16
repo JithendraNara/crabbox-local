@@ -2,6 +2,10 @@
 
 ## 0.15.1 - Unreleased
 
+### Added
+
+- Added an account-guarded EC2 Mac Dedicated Host quota request helper for turning macOS lifecycle smoke quota evidence into a dry-run or explicit AWS Service Quotas request.
+
 ## 0.15.0 - 2026-05-17
 
 ### Added
