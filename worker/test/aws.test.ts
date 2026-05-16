@@ -22,7 +22,7 @@ import {
   isRetryableAWSProvisioningError,
   staleCrabboxSSHIngressRules,
 } from "../src/aws";
-import { leaseConfig } from "../src/config";
+import { awsMacOSInstanceTypeCandidates, leaseConfig } from "../src/config";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -416,7 +416,7 @@ describe("aws provider", () => {
     );
 
     expect(imageArchitectures).toEqual(["arm64_mac", "x86_64_mac"]);
-    expect(hostTypes).toEqual(["mac2.metal", "mac1.metal"]);
+    expect(hostTypes).toEqual(awsMacOSInstanceTypeCandidates);
     expect(runTypes).toEqual(["mac1.metal"]);
     expect(runImages).toEqual(["ami-x86-mac"]);
     expect(result.serverType).toBe("mac1.metal");

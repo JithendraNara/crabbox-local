@@ -6,11 +6,15 @@ CRABBOX_BIN="${CRABBOX_BIN:-$ROOT/bin/crabbox}"
 CRABBOX_REMEDIATION_BIN="${CRABBOX_REMEDIATION_BIN:-crabbox}"
 CRABBOX_REGION_PREFLIGHT_COMMAND="${CRABBOX_REGION_PREFLIGHT_COMMAND:-scripts/macos-host-region-preflight.sh}"
 CRABBOX_MACOS_IAM_APPLY_COMMAND="${CRABBOX_MACOS_IAM_APPLY_COMMAND:-scripts/apply-macos-image-iam-policy.sh}"
+CRABBOX_MACOS_KNOWN_TYPES="mac2.metal,mac2-m2.metal,mac2-m2pro.metal,mac-m4.metal,mac-m4pro.metal,mac-m4max.metal,mac2-m1ultra.metal,mac-m3ultra.metal,mac1.metal"
 
 if [[ -n "${CRABBOX_MACOS_TYPE:-}" ]]; then
   types_raw="$CRABBOX_MACOS_TYPE"
 else
   types_raw="${CRABBOX_MACOS_TYPES:-mac2.metal,mac1.metal}"
+fi
+if [[ "$(printf '%s' "$types_raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "all" ]]; then
+  types_raw="$CRABBOX_MACOS_KNOWN_TYPES"
 fi
 regions_raw="${CRABBOX_MACOS_REGIONS:-${CRABBOX_CAPACITY_REGIONS:-${CRABBOX_MACOS_REGION:-eu-west-1}}}"
 

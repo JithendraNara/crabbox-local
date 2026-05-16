@@ -2175,7 +2175,7 @@ func awsInstanceTypeCandidatesForConfig(cfg Config) []string {
 func awsInstanceTypeCandidatesForTargetModeClass(target, windowsMode, class string) []string {
 	switch target {
 	case targetMacOS:
-		return []string{"mac2.metal", "mac1.metal"}
+		return awsMacOSInstanceTypeCandidates()
 	case targetWindows:
 		if windowsMode == windowsModeWSL2 {
 			switch class {
@@ -2205,6 +2205,20 @@ func awsInstanceTypeCandidatesForTargetModeClass(target, windowsMode, class stri
 		}
 	default:
 		return awsInstanceTypeCandidatesForClass(class)
+	}
+}
+
+func awsMacOSInstanceTypeCandidates() []string {
+	return []string{
+		"mac2.metal",
+		"mac2-m2.metal",
+		"mac2-m2pro.metal",
+		"mac-m4.metal",
+		"mac-m4pro.metal",
+		"mac-m4max.metal",
+		"mac2-m1ultra.metal",
+		"mac-m3ultra.metal",
+		"mac1.metal",
 	}
 }
 

@@ -1,5 +1,17 @@
 import type { LeaseRequest, Provider, TargetOS, WindowsMode } from "./types";
 
+export const awsMacOSInstanceTypeCandidates = [
+  "mac2.metal",
+  "mac2-m2.metal",
+  "mac2-m2pro.metal",
+  "mac-m4.metal",
+  "mac-m4pro.metal",
+  "mac-m4max.metal",
+  "mac2-m1ultra.metal",
+  "mac-m3ultra.metal",
+  "mac1.metal",
+];
+
 export interface LeaseConfig {
   provider: Provider;
   target: TargetOS;
@@ -486,7 +498,7 @@ export function awsInstanceTypeCandidatesForTargetClass(
   windowsMode: WindowsMode = "normal",
 ): string[] {
   if (target === "macos") {
-    return ["mac2.metal", "mac1.metal"];
+    return awsMacOSInstanceTypeCandidates;
   }
   if (target === "windows") {
     if (windowsMode === "wsl2") {

@@ -87,7 +87,7 @@ large     m8i.2xlarge, m8i-flex.2xlarge, c8i.2xlarge, r8i.2xlarge
 beast     m8i.4xlarge, m8i-flex.4xlarge, c8i.4xlarge, r8i.4xlarge, m8i.2xlarge
 
 AWS macOS
-all       mac2.metal, then mac1.metal unless `--type` is set
+all       mac2.metal, mac2-m2.metal, mac2-m2pro.metal, mac-m4.metal, mac-m4pro.metal, mac-m4max.metal, mac2-m1ultra.metal, mac-m3ultra.metal, then mac1.metal unless `--type` is set
 ```
 
 Exact AWS Windows WSL2 `--type` values must come from nested-virtualization
@@ -123,10 +123,12 @@ crabbox admin hosts release h-0123456789abcdef0 --provider aws --target macos --
 The coordinator AWS identity needs `ec2:DescribeInstanceTypeOfferings`,
 `ec2:DescribeHosts`, `ec2:AllocateHosts`, `ec2:ReleaseHosts`, and
 `ec2:CreateTags` for host lifecycle work, plus
-`servicequotas:ListServiceQuotas` for `hosts quota`. The `CreateTags` grant
-is needed because Crabbox tags hosts during `AllocateHosts`; scope it with
-`ec2:CreateAction=AllocateHosts`. Use `allocate --dry-run` first; it validates
-the request path without creating a Dedicated Host. Use
+`servicequotas:GetServiceQuota` for known Mac host quota checks and
+`servicequotas:ListServiceQuotas` as a fallback for future Mac host families.
+The `CreateTags` grant is needed because Crabbox tags hosts during
+`AllocateHosts`; scope it with `ec2:CreateAction=AllocateHosts`. Use
+`allocate --dry-run` first; it validates the request path without creating a
+Dedicated Host. Use
 `admin providers identity --provider aws` to confirm which coordinator AWS
 principal needs the policy.
 

@@ -135,6 +135,34 @@ test("macOS host region preflight falls back to mac1 when no mac2 host is ready"
   assert.equal(summary.existingHost, "h-existing");
 });
 
+test("macOS host region preflight expands all known Mac host families on request", async () => {
+  const run = await setupRun();
+  const result = await runPreflight({
+    CRABBOX_BIN: run.fake,
+    CRABBOX_MACOS_REGIONS: "eu-west-1",
+    CRABBOX_MACOS_TYPES: "all",
+    CRABBOX_FAKE_EXISTING_REGION: "eu-west-1",
+    CRABBOX_FAKE_EXISTING_TYPE: "mac-m4.metal",
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  const summary = JSON.parse(result.stdout);
+  assert.deepEqual(summary.instanceTypes, [
+    "mac2.metal",
+    "mac2-m2.metal",
+    "mac2-m2pro.metal",
+    "mac-m4.metal",
+    "mac-m4pro.metal",
+    "mac-m4max.metal",
+    "mac2-m1ultra.metal",
+    "mac-m3ultra.metal",
+    "mac1.metal",
+  ]);
+  assert.equal(summary.result, "ready-existing-host");
+  assert.equal(summary.selectedInstanceType, "mac-m4.metal");
+  assert.equal(summary.existingHost, "h-existing");
+});
+
 test("macOS host region preflight selects the first quota-backed no-spend dry-run", async () => {
   const run = await setupRun();
   const result = await runPreflight({

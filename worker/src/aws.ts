@@ -253,6 +253,23 @@ export class EC2SpotClient {
       const failures: string[] = [];
       const attempts: ProvisioningAttempt[] = [];
       const quotaCache = new Map<string, number | undefined>();
+      const imageCache = new Map<string, string>();
+      const resolveCandidateImageID = async (candidateConfig: LeaseConfig): Promise<string> => {
+        if (defaultImageID) {
+          return defaultImageID;
+        }
+        if (candidateConfig.target !== "macos") {
+          return this.resolveAMI(candidateConfig);
+        }
+        const architecture = awsMacOSAMIArchitecture(candidateConfig.serverType);
+        const cached = imageCache.get(architecture);
+        if (cached) {
+          return cached;
+        }
+        const imageID = await this.resolveAMI(candidateConfig);
+        imageCache.set(architecture, imageID);
+        return imageID;
+      };
       for (const serverType of candidates) {
         // oxlint-disable-next-line eslint/no-await-in-loop -- quota preflight follows sequential fallback order.
         const preflight = await this.quotaPreflightAttempt(
@@ -266,8 +283,8 @@ export class EC2SpotClient {
           continue;
         }
         try {
-          // oxlint-disable-next-line eslint/no-await-in-loop -- macOS fallback must resolve the AMI for the current instance architecture.
-          const imageID = defaultImageID || (await this.resolveAMI({ ...config, serverType }));
+          // oxlint-disable-next-line eslint/no-await-in-loop -- instance-type fallback may need an architecture-specific AMI.
+          const imageID = await resolveCandidateImageID({ ...config, serverType });
           // oxlint-disable-next-line eslint/no-await-in-loop -- instance-type fallback must stay sequential.
           const server = await this.createServer(
             { ...config, serverType },
@@ -312,15 +329,12 @@ export class EC2SpotClient {
             continue;
           }
           try {
-            let imageID = defaultImageID;
-            if (!imageID) {
-              // oxlint-disable-next-line eslint/no-await-in-loop -- macOS fallback must resolve the AMI for the current instance architecture.
-              imageID = await this.resolveAMI({
-                ...config,
-                capacityMarket: "on-demand",
-                serverType,
-              });
-            }
+            // oxlint-disable-next-line eslint/no-await-in-loop -- on-demand fallback may need an architecture-specific AMI.
+            const imageID = await resolveCandidateImageID({
+              ...config,
+              capacityMarket: "on-demand",
+              serverType,
+            });
             // oxlint-disable-next-line eslint/no-await-in-loop -- on-demand fallback must stay sequential.
             const server = await this.createServer(
               { ...config, capacityMarket: "on-demand", serverType },
@@ -929,7 +943,7 @@ export class EC2SpotClient {
       return this.resolveLatestAmazonAMI("Windows_Server-2022-English-Full-Base-*", "x86_64");
     }
     if (config.target === "macos") {
-      if (config.serverType.startsWith("mac1.")) {
+      if (awsMacOSAMIArchitecture(config.serverType) === "x86_64_mac") {
         return this.resolveLatestAmazonAMI("amzn-ec2-macos-14.*", "x86_64_mac");
       }
       return this.resolveLatestAmazonAMI("amzn-ec2-macos-14.*-arm64", "arm64_mac");
@@ -1587,6 +1601,10 @@ export function awsQuotaCodeForMarket(market: string): string {
 
 function awsMacHostFamily(serverType: string): string {
   return serverType.split(".")[0]?.toLowerCase() ?? "";
+}
+
+function awsMacOSAMIArchitecture(serverType: string): "arm64_mac" | "x86_64_mac" {
+  return serverType.startsWith("mac1.") ? "x86_64_mac" : "arm64_mac";
 }
 
 function awsServiceQuotaFromRecord(value: unknown): AWSServiceQuota | undefined {

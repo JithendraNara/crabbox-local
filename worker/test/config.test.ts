@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  awsMacOSInstanceTypeCandidates,
   awsInstanceTypeCandidatesForClass,
   awsInstanceTypeCandidatesForTargetClass,
   azureWindowsVMSizeCandidatesForClass,
@@ -88,8 +89,7 @@ describe("machine class config", () => {
       "t3.large",
     ]);
     expect(awsInstanceTypeCandidatesForTargetClass("macos", "standard")).toEqual([
-      "mac2.metal",
-      "mac1.metal",
+      ...awsMacOSInstanceTypeCandidates,
     ]);
   });
 
@@ -130,10 +130,9 @@ describe("machine class config", () => {
       );
       expect(gcpMachineTypeCandidatesForClass(name)).toEqual(gcp[name]);
     }
-    expect(awsInstanceTypeCandidatesForTargetClass("macos", "standard")).toEqual([
-      "mac2.metal",
-      "mac1.metal",
-    ]);
+    expect(awsInstanceTypeCandidatesForTargetClass("macos", "standard")).toEqual(
+      awsMacOSInstanceTypeCandidates,
+    );
   });
 });
 

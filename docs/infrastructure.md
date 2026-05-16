@@ -246,7 +246,8 @@ known quota-impossible instance types before calling `RunInstances`; when it
 is missing, EC2 launch errors are still classified after the failed call.
 EC2 Mac image bakes also need the separate Dedicated Host lifecycle grant
 printed by `crabbox admin hosts policy --provider aws --target macos`, including
-`servicequotas:ListServiceQuotas` for the Mac host quota preflight. Print the baseline provider
+direct Service Quotas lookups for the Mac host quota preflight and
+`servicequotas:ListServiceQuotas` as a fallback for future Mac families. Print the baseline provider
 policy with `crabbox admin providers policy --provider aws`, or the combined
 provider plus Dedicated Host policy with
 `crabbox admin providers policy --provider aws --target macos`.
@@ -254,8 +255,10 @@ provider plus Dedicated Host policy with
 Before approving paid EC2 Mac host allocation, run the no-spend region
 preflight against the coordinator you intend to use:
 `CRABBOX_MACOS_REGIONS=eu-west-1,us-east-1,us-west-2 scripts/macos-host-region-preflight.sh`.
-It checks `mac2.metal` and then `mac1.metal` unless `CRABBOX_MACOS_TYPE` is set,
-looks for an existing reusable Dedicated Host first, then runs allocation
+It checks `mac2.metal` and then `mac1.metal` by default unless
+`CRABBOX_MACOS_TYPE` or `CRABBOX_MACOS_TYPES` is set. Set
+`CRABBOX_MACOS_TYPES=all` to sweep every known EC2 Mac Dedicated Host family.
+It looks for an existing reusable Dedicated Host first, then runs allocation
 dry-runs and Dedicated Mac host quota checks by region and type. It returns JSON
 with `ready-existing-host`, `ready-allocation`, or `blocked`; `ready-allocation`
 requires both a successful allocation dry-run and visible quota of at least one
@@ -321,7 +324,7 @@ large     m8i.2xlarge, m8i-flex.2xlarge, c8i.2xlarge, r8i.2xlarge
 beast     m8i.4xlarge, m8i-flex.4xlarge, c8i.4xlarge, r8i.4xlarge, m8i.2xlarge
 
 AWS macOS
-all       mac2.metal, then mac1.metal unless `--type` is set
+all       mac2.metal, mac2-m2.metal, mac2-m2pro.metal, mac-m4.metal, mac-m4pro.metal, mac-m4max.metal, mac2-m1ultra.metal, mac-m3ultra.metal, then mac1.metal unless `--type` is set
 ```
 
 Profiles choose a default class, and commands can override with `--class`.
