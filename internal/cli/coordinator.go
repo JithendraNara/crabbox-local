@@ -556,7 +556,6 @@ func (c *CoordinatorClient) CreateLease(ctx context.Context, cfg Config, publicK
 		"azureLocation":                   cfg.AzureLocation,
 		"azureImage":                      cfg.AzureImage,
 		"azureSnapshot":                   cfg.AzureSnapshot,
-		"azureOSDisk":                     cfg.AzureOSDisk,
 		"sshUser":                         cfg.SSHUser,
 		"sshPort":                         cfg.SSHPort,
 		"sshFallbackPorts":                cfg.SSHFallbackPorts,
@@ -569,6 +568,9 @@ func (c *CoordinatorClient) CreateLease(ctx context.Context, cfg Config, publicK
 	}
 	if len(capacity) > 0 {
 		req["capacity"] = capacity
+	}
+	if cfg.AzureOSDiskExplicit {
+		req["azureOSDisk"] = cfg.AzureOSDisk
 	}
 	addCoordinatorGCPFields(req, cfg)
 	err = c.do(ctx, http.MethodPost, "/v1/leases", req, &res)

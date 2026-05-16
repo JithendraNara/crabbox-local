@@ -662,6 +662,9 @@ func TestEnvOverridesConfig(t *testing.T) {
 	if cfg.AzureOSDisk != "managed" {
 		t.Fatalf("AzureOSDisk=%q", cfg.AzureOSDisk)
 	}
+	if !cfg.AzureOSDiskExplicit {
+		t.Fatal("AzureOSDiskExplicit=false, want true")
+	}
 	if cfg.GCPProject != "crabbox-project" || cfg.GCPZone != "europe-west2-b" || cfg.GCPNetwork != "crabbox-net" || cfg.GCPSubnet != "crabbox-subnet" || cfg.GCPRootGB != 900 || cfg.GCPServiceAccount != "runner@crabbox-project.iam.gserviceaccount.com" {
 		t.Fatalf("unexpected gcp env: project=%s zone=%s network=%s subnet=%s root=%d service=%s", cfg.GCPProject, cfg.GCPZone, cfg.GCPNetwork, cfg.GCPSubnet, cfg.GCPRootGB, cfg.GCPServiceAccount)
 	}

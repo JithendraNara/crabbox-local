@@ -47,6 +47,9 @@ func TestProviderAppliesAzureOSDiskFlag(t *testing.T) {
 	if cfg.AzureOSDisk != core.AzureOSDiskManaged {
 		t.Fatalf("AzureOSDisk=%q want %q", cfg.AzureOSDisk, core.AzureOSDiskManaged)
 	}
+	if !cfg.AzureOSDiskExplicit {
+		t.Fatal("AzureOSDiskExplicit=false, want true")
+	}
 }
 
 func TestProviderValidatesConfiguredAzureOSDisk(t *testing.T) {

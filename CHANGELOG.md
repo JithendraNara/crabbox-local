@@ -2,6 +2,10 @@
 
 ## 0.14.1 - Unreleased
 
+### Fixed
+
+- Fixed brokered Azure leases so the CLI only sends `azureOSDisk` when the user explicitly configures it, preserving the coordinator default while keeping new Azure leases checkpointable by default. Thanks @jwmoss.
+
 ## 0.14.0 - 2026-05-15
 
 ### Added

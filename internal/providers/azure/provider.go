@@ -43,6 +43,7 @@ func (Provider) ApplyFlags(cfg *core.Config, fs *flag.FlagSet, values any) error
 			return err
 		}
 		cfg.AzureOSDisk = mode
+		cfg.AzureOSDiskExplicit = true
 		return nil
 	}
 	if cfg.AzureOSDisk != "" {
