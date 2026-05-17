@@ -58,6 +58,9 @@ crabbox checkpoint create --id blue-lobster --mode archive
 # Use image strategy instead of disk-snapshot (AWS Linux/macOS, GCP Linux)
 crabbox checkpoint create --id blue-lobster --strategy image
 
+# Direct AWS leases can force native AMI checkpoints without a coordinator
+crabbox checkpoint create --provider aws --id blue-lobster --mode native
+
 # Custom workdir
 crabbox checkpoint create --id blue-lobster --workdir /work/cbx_123/my-app
 ```
@@ -268,6 +271,11 @@ Opt-in strategy `--strategy image`:
 - AWS Linux/macOS: AMI (Amazon Machine Image)
 - Azure: Not created from active VMs (requires stopped/generalized source)
 - GCP Linux: Machine image
+
+Direct AWS Linux/macOS leases use AMIs for native checkpoints. `--mode auto`
+still falls back to workspace archives without a coordinator, while
+`--mode native` or `--strategy image` creates an AMI in the configured AWS
+region.
 
 AWS macOS checkpoint forks still require EC2 Mac Dedicated Host capacity. Brokered
 mode can discover a host; host-pinned checkpoints reuse the recorded `hostId`.

@@ -12,6 +12,7 @@
 
 - Added `crabbox capsule` for local GitHub Actions failure replay manifests, including capture, inspect, replay, promotion, and documentation for how capsules compose with actions hydration and checkpoints. Thanks @zozo123.
 - Added AWS macOS support to native `crabbox checkpoint` snapshot/image creation and forks, including host-pin metadata and On-Demand fork defaults.
+- Added direct AWS AMI checkpoint creation so non-brokered AWS Linux/macOS leases can use `crabbox checkpoint create --mode native` or `--strategy image` without a coordinator.
 - Added `--take-control` for WebVNC portal handoffs so opened browser viewers can automatically become the keyboard and mouse controller after connecting.
 - Added `scripts/macos-image-lifecycle-smoke.sh` for guarded AWS EC2 Mac host allocation, source macOS lease boot, WebVNC bridge proof, AMI creation, candidate-image smoke, promotion, promoted-image smoke, cleanup, and durable `summary.json` evidence.
 - Added a no-spend macOS host region preflight helper for checking reusable EC2 Mac Dedicated Hosts, dry-run allocation readiness, and Dedicated Mac host quota across configured AWS regions before approving paid allocation.

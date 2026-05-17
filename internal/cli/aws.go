@@ -20,6 +20,15 @@ const (
 	awsSSHIngressDescription = "Crabbox SSH"
 )
 
+var awsSnapshotDeleteBackoff = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+}
+
 type AWSClient struct {
 	ec2    *ec2.Client
 	region string
@@ -388,6 +397,140 @@ func (c *AWSClient) DeleteServer(ctx context.Context, id string) error {
 		InstanceIds: []string{id},
 	})
 	return err
+}
+
+func (c *AWSClient) CreateImageCheckpoint(ctx context.Context, instanceID, name string, noReboot bool) (CoordinatorImage, error) {
+	tags := awsTagsWithName(map[string]string{
+		"crabbox":           "true",
+		"created_by":        "crabbox",
+		"crabbox:source_id": instanceID,
+	}, name)
+	out, err := c.ec2.CreateImage(ctx, &ec2.CreateImageInput{
+		InstanceId: aws.String(instanceID),
+		Name:       aws.String(name),
+		NoReboot:   aws.Bool(noReboot),
+		TagSpecifications: []types.TagSpecification{
+			{ResourceType: types.ResourceTypeImage, Tags: tags},
+			{ResourceType: types.ResourceTypeSnapshot, Tags: tags},
+		},
+	})
+	if err != nil {
+		return CoordinatorImage{}, err
+	}
+	imageID := aws.ToString(out.ImageId)
+	if imageID == "" {
+		return CoordinatorImage{}, exit(5, "aws returned no image id")
+	}
+	return CoordinatorImage{
+		ID:         imageID,
+		Name:       name,
+		State:      "pending",
+		Provider:   "aws",
+		Kind:       checkpointKindAWSAMI,
+		Region:     c.region,
+		ResourceID: imageID,
+		Direct:     true,
+	}, nil
+}
+
+func (c *AWSClient) GetImageCheckpoint(ctx context.Context, imageID string) (CoordinatorImage, error) {
+	out, err := c.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{
+		ImageIds: []string{imageID},
+	})
+	if err != nil {
+		return CoordinatorImage{}, err
+	}
+	if len(out.Images) == 0 {
+		return CoordinatorImage{}, exit(4, "aws image not found: %s", imageID)
+	}
+	image := out.Images[0]
+	return CoordinatorImage{
+		ID:           aws.ToString(image.ImageId),
+		Name:         aws.ToString(image.Name),
+		State:        string(image.State),
+		Provider:     "aws",
+		Kind:         checkpointKindAWSAMI,
+		Region:       c.region,
+		ResourceID:   aws.ToString(image.ImageId),
+		SnapshotIDs:  awsImageSnapshotIDs(image),
+		Direct:       true,
+		Architecture: string(image.Architecture),
+	}, nil
+}
+
+func (c *AWSClient) DeleteImageCheckpoint(ctx context.Context, imageID string, fallbackSnapshotIDs []string) error {
+	out, err := c.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{
+		ImageIds: []string{imageID},
+	})
+	if err != nil && !strings.Contains(err.Error(), "InvalidAMIID.NotFound") {
+		return err
+	}
+	snapshotIDs := append([]string(nil), fallbackSnapshotIDs...)
+	if err == nil && len(out.Images) > 0 {
+		snapshotIDs = append(snapshotIDs, awsImageSnapshotIDs(out.Images[0])...)
+	}
+	snapshotIDs = uniqueStrings(snapshotIDs)
+	if _, err := c.ec2.DeregisterImage(ctx, &ec2.DeregisterImageInput{ImageId: aws.String(imageID)}); err != nil && !strings.Contains(err.Error(), "InvalidAMIID.NotFound") {
+		return err
+	}
+	for _, snapshotID := range snapshotIDs {
+		if err := c.deleteSnapshotWithRetry(ctx, snapshotID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *AWSClient) deleteSnapshotWithRetry(ctx context.Context, snapshotID string) error {
+	var lastErr error
+	for attempt := 0; attempt <= len(awsSnapshotDeleteBackoff); attempt++ {
+		if _, err := c.ec2.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}); err != nil {
+			message := err.Error()
+			if strings.Contains(message, "InvalidSnapshot.NotFound") {
+				return nil
+			}
+			if !isRetryableAWSSnapshotDeleteError(message) {
+				return err
+			}
+			lastErr = err
+		} else {
+			return nil
+		}
+		if attempt >= len(awsSnapshotDeleteBackoff) {
+			break
+		}
+		timer := time.NewTimer(awsSnapshotDeleteBackoff[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func awsImageSnapshotIDs(image types.Image) []string {
+	var snapshotIDs []string
+	for _, mapping := range image.BlockDeviceMappings {
+		if mapping.Ebs == nil {
+			continue
+		}
+		if snapshotID := aws.ToString(mapping.Ebs.SnapshotId); snapshotID != "" {
+			snapshotIDs = append(snapshotIDs, snapshotID)
+		}
+	}
+	return uniqueStrings(snapshotIDs)
+}
+
+func isRetryableAWSSnapshotDeleteError(message string) bool {
+	return strings.Contains(message, "InvalidSnapshot.InUse") ||
+		strings.Contains(message, "RequestLimitExceeded") ||
+		strings.Contains(message, "Throttl") ||
+		strings.Contains(message, "ServiceUnavailable") ||
+		strings.Contains(message, "InternalError") ||
+		strings.Contains(message, "http 5") ||
+		strings.Contains(strings.ToLower(message), "currently in use")
 }
 
 func (c *AWSClient) SetTags(ctx context.Context, id string, labels map[string]string) error {

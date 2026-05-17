@@ -377,6 +377,94 @@ func TestCheckpointCreateModeAutoFallsBackForDirectAWS(t *testing.T) {
 	}
 }
 
+func TestCheckpointCreateModeNativeSupportsDirectAWSAMI(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Provider = "aws"
+	cfg.Coordinator = ""
+	cfg.TargetOS = targetMacOS
+	server := Server{Provider: "aws", CloudID: "i-123"}
+	target := SSHTarget{TargetOS: targetMacOS}
+
+	if got := checkpointCreateMode("native", "", cfg, server, target, false); got != checkpointKindAWSAMI {
+		t.Fatalf("native mode=%q, want %q", got, checkpointKindAWSAMI)
+	}
+	if got := checkpointCreateMode("native", "image", cfg, server, target, false); got != checkpointKindAWSAMI {
+		t.Fatalf("native image mode=%q, want %q", got, checkpointKindAWSAMI)
+	}
+	if got := checkpointCreateMode("auto", "image", cfg, server, target, false); got != checkpointKindAWSAMI {
+		t.Fatalf("auto image mode=%q, want %q", got, checkpointKindAWSAMI)
+	}
+	if got := checkpointCreateMode("image", "", cfg, server, target, false); got != checkpointKindAWSAMI {
+		t.Fatalf("image mode=%q, want %q", got, checkpointKindAWSAMI)
+	}
+	if got := checkpointCreateMode("snapshot", "", cfg, server, target, false); got != "unsupported" {
+		t.Fatalf("snapshot mode=%q, want unsupported", got)
+	}
+}
+
+func TestDirectAWSCheckpointConfigRequiresNoCoordinator(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "crabbox.yaml")
+	if err := os.WriteFile(cfgPath, []byte("provider: aws\naws:\n  region: us-east-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CRABBOX_CONFIG", cfgPath)
+	record := checkpointRecord{
+		Kind:     checkpointKindAWSAMI,
+		Provider: "aws",
+	}
+	record.Native.Provider = "aws"
+	record.Native.Region = "eu-west-1"
+	record.Native.Direct = true
+
+	cfg, ok := directAWSCheckpointConfig(record)
+	if !ok {
+		t.Fatal("direct AWS checkpoint config not detected")
+	}
+	if cfg.AWSRegion != "eu-west-1" {
+		t.Fatalf("AWSRegion=%q, want record region", cfg.AWSRegion)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("provider: aws\ncoordinator: https://coordinator.example\naws:\n  region: us-east-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := directAWSCheckpointConfig(record); ok {
+		t.Fatal("coordinator-backed config should not use direct AWS cleanup")
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("provider: aws\naws:\n  region: us-east-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record.Native.Direct = false
+	if _, ok := directAWSCheckpointConfig(record); ok {
+		t.Fatal("brokered AWS checkpoint should not use direct AWS cleanup")
+	}
+}
+
+func TestApplyNativeImageCheckpointRecordPersistsSnapshotIDs(t *testing.T) {
+	record := checkpointRecord{Kind: checkpointKindArchive, Provider: "aws"}
+	applyNativeImageCheckpointRecord(&record, CoordinatorImage{
+		ID:          "ami-12345678",
+		Name:        "checkpoint",
+		State:       "available",
+		Provider:    "aws",
+		Kind:        checkpointKindAWSAMI,
+		Region:      "eu-west-1",
+		ResourceID:  "ami-12345678",
+		SnapshotIDs: []string{"snap-1", "snap-2"},
+		Direct:      true,
+	}, true)
+
+	if record.Kind != checkpointKindAWSAMI {
+		t.Fatalf("Kind=%q, want %q", record.Kind, checkpointKindAWSAMI)
+	}
+	if got := strings.Join(record.Native.SnapshotIDs, ","); got != "snap-1,snap-2" {
+		t.Fatalf("snapshot IDs=%q, want snap-1,snap-2", got)
+	}
+	if !record.Native.Direct {
+		t.Fatal("direct marker was not persisted")
+	}
+}
+
 func TestCheckpointCreateModeNativeUsesResolvedProvider(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Provider = "aws"

@@ -52,16 +52,18 @@ type checkpointRecord struct {
 	ArchivePath    string `json:"archivePath,omitempty"`
 	ArchiveBytes   int64  `json:"archiveBytes,omitempty"`
 	Native         struct {
-		Provider string `json:"provider,omitempty"`
-		ImageID  string `json:"imageId,omitempty"`
-		Kind     string `json:"kind,omitempty"`
-		Name     string `json:"name,omitempty"`
-		State    string `json:"state,omitempty"`
-		Region   string `json:"region,omitempty"`
-		Project  string `json:"project,omitempty"`
-		Resource string `json:"resource,omitempty"`
-		Strategy string `json:"strategy,omitempty"`
-		NoReboot bool   `json:"noReboot,omitempty"`
+		Provider    string   `json:"provider,omitempty"`
+		ImageID     string   `json:"imageId,omitempty"`
+		Kind        string   `json:"kind,omitempty"`
+		Name        string   `json:"name,omitempty"`
+		State       string   `json:"state,omitempty"`
+		Region      string   `json:"region,omitempty"`
+		Project     string   `json:"project,omitempty"`
+		Resource    string   `json:"resource,omitempty"`
+		SnapshotIDs []string `json:"snapshotIds,omitempty"`
+		Direct      bool     `json:"direct,omitempty"`
+		Strategy    string   `json:"strategy,omitempty"`
+		NoReboot    bool     `json:"noReboot,omitempty"`
 	} `json:"native,omitempty"`
 	Repo struct {
 		Root      string `json:"root,omitempty"`
@@ -533,6 +535,24 @@ func deleteCheckpoint(ctx context.Context, store checkpointStore, id string, loc
 	}
 	providerID := nativeCheckpointDeleteID(record)
 	if isNativeCheckpointKind(record.Kind) && providerID != "" && !localOnly {
+		if cfg, ok := directAWSCheckpointConfig(record); ok {
+			client, err := newAWSClient(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			if len(record.Native.SnapshotIDs) == 0 {
+				if image, err := client.GetImageCheckpoint(ctx, providerID); err == nil && len(image.SnapshotIDs) > 0 {
+					record.Native.SnapshotIDs = image.SnapshotIDs
+					if writeErr := store.Write(record); writeErr != nil {
+						return writeErr
+					}
+				}
+			}
+			if err := client.DeleteImageCheckpoint(ctx, providerID, record.Native.SnapshotIDs); err != nil {
+				return err
+			}
+			return store.Delete(id)
+		}
 		coord, err := configuredAdminCoordinator()
 		if err != nil {
 			return err
@@ -692,6 +712,29 @@ func (a App) verifyCheckpointRecord(ctx context.Context, store checkpointStore, 
 		}
 		coord, err := configuredAdminCoordinator()
 		if err != nil {
+			if cfg, ok := directAWSCheckpointConfig(record); ok {
+				client, clientErr := newAWSClient(ctx, cfg)
+				if clientErr != nil {
+					audit.ProviderState = "unknown"
+					audit.NextAction = "check_auth_or_provider"
+					audit.Error = clientErr.Error()
+					return audit, nil
+				}
+				image, imageErr := client.GetImageCheckpoint(ctx, providerID)
+				if imageErr != nil {
+					if strings.Contains(imageErr.Error(), "InvalidAMIID.NotFound") || strings.Contains(imageErr.Error(), "aws image not found") {
+						audit.ProviderState = "missing"
+						audit.NextAction = "delete_local"
+						return audit, nil
+					}
+					audit.ProviderState = "unknown"
+					audit.NextAction = "check_auth_or_provider"
+					audit.Error = imageErr.Error()
+					return audit, nil
+				}
+				applyCheckpointImageAudit(&audit, image)
+				return audit, nil
+			}
 			audit.ProviderState = "unknown"
 			audit.NextAction = "configure_admin_auth"
 			audit.Error = err.Error()
@@ -709,21 +752,41 @@ func (a App) verifyCheckpointRecord(ctx context.Context, store checkpointStore, 
 			audit.Error = err.Error()
 			return audit, nil
 		}
-		audit.ProviderState = blank(image.State, "unknown")
-		switch strings.ToLower(image.State) {
-		case "available", "ready", "succeeded", "completed":
-			audit.NextAction = "fork_or_delete"
-		case "failed", "invalid":
-			audit.NextAction = "delete"
-		default:
-			audit.NextAction = "wait_or_delete"
-		}
+		applyCheckpointImageAudit(&audit, image)
 		return audit, nil
 	default:
 		audit.LocalState = "metadata_only"
 		audit.ProviderState = "not_applicable"
 		audit.NextAction = "inspect"
 		return audit, nil
+	}
+}
+
+func directAWSCheckpointConfig(record checkpointRecord) (Config, bool) {
+	provider := firstNonBlank(record.Native.Provider, checkpointProviderForKind(record.Kind), record.Provider)
+	if provider != "aws" || record.Kind != checkpointKindAWSAMI || !record.Native.Direct {
+		return Config{}, false
+	}
+	cfg, err := loadConfig()
+	if err != nil || cfg.Coordinator != "" {
+		return Config{}, false
+	}
+	cfg.Provider = "aws"
+	if record.Native.Region != "" {
+		cfg.AWSRegion = record.Native.Region
+	}
+	return cfg, true
+}
+
+func applyCheckpointImageAudit(audit *checkpointAudit, image CoordinatorImage) {
+	audit.ProviderState = blank(image.State, "unknown")
+	switch strings.ToLower(image.State) {
+	case "available", "ready", "succeeded", "completed":
+		audit.NextAction = "fork_or_delete"
+	case "failed", "invalid":
+		audit.NextAction = "delete"
+	default:
+		audit.NextAction = "wait_or_delete"
 	}
 }
 
@@ -755,6 +818,8 @@ func applyNativeImageCheckpointRecord(record *checkpointRecord, image Coordinato
 	record.Native.Region = image.Region
 	record.Native.Project = image.Project
 	record.Native.Resource = image.ResourceID
+	record.Native.SnapshotIDs = image.SnapshotIDs
+	record.Native.Direct = image.Direct
 	record.Native.Strategy = checkpointStrategyForKind(record.Kind)
 	record.Native.NoReboot = noReboot
 }
@@ -860,14 +925,30 @@ func checkpointCreateMode(mode, strategy string, cfg Config, server Server, targ
 		if kind, ok := nativeCheckpointKind(cfg, server, target, normalizedStrategy); ok {
 			return kind
 		}
+		if !isAutoCheckpointStrategy(strategy) {
+			if kind, ok := directAWSNativeCheckpointKind(cfg, server, target, normalizedStrategy); ok {
+				return kind
+			}
+		}
 		return checkpointKindArchive
 	case "native", "provider-native", "vm":
 		if kind, ok := nativeCheckpointKind(cfg, server, target, normalizedStrategy); ok {
 			return kind
 		}
+		if kind, ok := directAWSNativeCheckpointKind(cfg, server, target, normalizedStrategy); ok {
+			return kind
+		}
+		if isAutoCheckpointStrategy(strategy) {
+			if kind, ok := directAWSNativeCheckpointKind(cfg, server, target, checkpointStrategyImage); ok {
+				return kind
+			}
+		}
 		return "unsupported"
 	case "ami", "image":
 		if kind, ok := nativeCheckpointKind(cfg, server, target, checkpointStrategyImage); ok {
+			return kind
+		}
+		if kind, ok := directAWSNativeCheckpointKind(cfg, server, target, checkpointStrategyImage); ok {
 			return kind
 		}
 		return "unsupported"
@@ -921,6 +1002,29 @@ func nativeCheckpointKind(cfg Config, server Server, target SSHTarget, strategy 
 	}
 }
 
+func directAWSNativeCheckpointKind(cfg Config, server Server, target SSHTarget, strategy string) (string, bool) {
+	if cfg.Coordinator != "" || server.Provider != "aws" || server.CloudID == "" || isWindowsNativeTarget(target) {
+		return "", false
+	}
+	targetOS := firstNonBlank(target.TargetOS, cfg.TargetOS)
+	if targetOS != targetLinux && targetOS != targetMacOS {
+		return "", false
+	}
+	if normalizeCheckpointStrategy(strategy) != checkpointStrategyImage {
+		return "", false
+	}
+	return checkpointKindAWSAMI, true
+}
+
+func isAutoCheckpointStrategy(strategy string) bool {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "", checkpointStrategyAuto:
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeCheckpointStrategy(strategy string) string {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
 	case "", checkpointStrategyAuto, "snapshot", "disk":
@@ -955,6 +1059,9 @@ func checkpointStrategyForKind(kind string) string {
 }
 
 func (a App) createNativeCheckpoint(ctx context.Context, cfg Config, server Server, target SSHTarget, leaseID, name, repoName, strategy string, noReboot, wait bool, waitTimeout time.Duration) (CoordinatorImage, error) {
+	if kind, ok := directAWSNativeCheckpointKind(cfg, server, target, strategy); ok && kind == checkpointKindAWSAMI {
+		return a.createDirectAWSAMICheckpoint(ctx, cfg, server, target, leaseID, name, repoName, noReboot, wait, waitTimeout)
+	}
 	if cfg.Coordinator == "" {
 		return CoordinatorImage{}, exit(2, "native checkpoints require a configured coordinator")
 	}
@@ -991,6 +1098,59 @@ func (a App) createNativeCheckpoint(ctx context.Context, cfg Config, server Serv
 
 func (a App) createAWSAMICheckpoint(ctx context.Context, cfg Config, target SSHTarget, leaseID, name, repoName string, noReboot, wait bool, waitTimeout time.Duration) (CoordinatorImage, error) {
 	return a.createNativeCheckpoint(ctx, cfg, Server{Provider: "aws", CloudID: leaseID}, target, leaseID, name, repoName, checkpointStrategyImage, noReboot, wait, waitTimeout)
+}
+
+func (a App) createDirectAWSAMICheckpoint(ctx context.Context, cfg Config, server Server, target SSHTarget, leaseID, name, repoName string, noReboot, wait bool, waitTimeout time.Duration) (CoordinatorImage, error) {
+	if name == "" {
+		name = defaultNativeImageName(leaseID, repoName)
+	}
+	if err := prepareNativeImageSource(ctx, target); err != nil {
+		return CoordinatorImage{}, err
+	}
+	client, err := newAWSClient(ctx, cfg)
+	if err != nil {
+		return CoordinatorImage{}, err
+	}
+	image, err := client.CreateImageCheckpoint(ctx, server.CloudID, name, noReboot)
+	if err != nil {
+		return CoordinatorImage{}, err
+	}
+	if wait {
+		waited, err := waitForDirectAWSImage(ctx, client, image.ID, waitTimeout, a.Stderr)
+		if err != nil {
+			return image, err
+		}
+		return waited, nil
+	}
+	return image, nil
+}
+
+func waitForDirectAWSImage(ctx context.Context, client *AWSClient, imageID string, timeout time.Duration, stderr io.Writer) (CoordinatorImage, error) {
+	deadline := time.Now().Add(timeout)
+	var last CoordinatorImage
+	for {
+		image, err := client.GetImageCheckpoint(ctx, imageID)
+		if err != nil {
+			return CoordinatorImage{}, err
+		}
+		last = image
+		state := strings.ToLower(image.State)
+		if state == "available" || state == "ready" || state == "succeeded" || state == "completed" {
+			return image, nil
+		}
+		if state == "failed" || state == "invalid" {
+			return CoordinatorImage{}, exit(5, "image %s failed", imageID)
+		}
+		if time.Now().After(deadline) {
+			return CoordinatorImage{}, exit(5, "timed out waiting for image %s; last state=%s", imageID, last.State)
+		}
+		_, _ = fmt.Fprintf(stderr, "waiting image=%s state=%s\n", imageID, blank(image.State, "pending"))
+		select {
+		case <-ctx.Done():
+			return CoordinatorImage{}, ctx.Err()
+		case <-time.After(15 * time.Second):
+		}
+	}
 }
 
 func defaultNativeImageName(leaseID, repoName string) string {

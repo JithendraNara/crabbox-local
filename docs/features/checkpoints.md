@@ -26,7 +26,9 @@ leases.
 - Excludes `.crabbox/env` and `.crabbox/scripts` by default
 
 Default `auto` mode: native for brokered AWS Linux/macOS leases and Azure/GCP
-Linux leases, otherwise archive.
+Linux leases, otherwise archive. Direct AWS leases can force native AMI
+checkpoints with `--mode native` or `--strategy image`; direct AWS `auto` keeps
+the archive fallback.
 
 ## Native Checkpoint Strategies
 
@@ -53,6 +55,8 @@ stateless Azure leases where native checkpoint/fork support is not needed.
 - GCP: Machine image (`gcp-machine-image`)
 - Slower but preserves complete VM configuration
 - Best for distribution or long-term storage
+- Direct AWS Linux/macOS leases use this strategy for native checkpoints because
+  AMIs can be forked directly through `CRABBOX_AWS_AMI`
 
 **Metadata-Only (`recipe`)**
 - Records lease/repo/workdir info without creating artifacts

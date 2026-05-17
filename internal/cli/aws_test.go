@@ -40,6 +40,25 @@ func TestApplyAWSRunInstanceTargetOptionsLeavesNativeWindowsDefault(t *testing.T
 	}
 }
 
+func TestRetryableAWSSnapshotDeleteError(t *testing.T) {
+	for _, message := range []string{
+		"InvalidSnapshot.InUse: snapshot is currently in use by ami-123",
+		"RequestLimitExceeded: request rate exceeded",
+		"ThrottlingException: slow down",
+		"ServiceUnavailable: try again",
+		"InternalError: internal failure",
+		"http 500: server error",
+		"Snapshot snap-123 is currently in use",
+	} {
+		if !isRetryableAWSSnapshotDeleteError(message) {
+			t.Fatalf("message %q should be retryable", message)
+		}
+	}
+	if isRetryableAWSSnapshotDeleteError("AuthFailure: not authorized") {
+		t.Fatal("AuthFailure should not be retryable")
+	}
+}
+
 func TestStaleAWSCrabboxSSHIngressPermissionsPrunesOnlyOwnedCIDRs(t *testing.T) {
 	group := types.SecurityGroup{
 		IpPermissions: []types.IpPermission{
