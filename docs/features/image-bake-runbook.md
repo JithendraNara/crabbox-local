@@ -272,10 +272,15 @@ scripts/macos-image-lifecycle-smoke.sh
 ```
 
 The script warms a macOS desktop lease, verifies SSH/sync/VNC prerequisites,
-starts WebVNC, waits for the portal bridge to report `connected=true`, collects
-desktop artifacts, creates a candidate AMI with a rebooting image capture,
-boots and smokes the candidate, then promotes and smokes the promoted image
-when `CRABBOX_MACOS_PROMOTE=1`. Tune the WebVNC bridge wait with
+requires the image to expose macOS 15 or newer, a selected full Xcode developer
+directory, and Swift tools 6.2 or newer, starts WebVNC, waits for the portal
+bridge to report `connected=true`, collects desktop artifacts, creates a
+candidate AMI with a rebooting image capture, boots and smokes the candidate,
+then promotes and smokes the promoted image when `CRABBOX_MACOS_PROMOTE=1`.
+Tune the toolchain gates with `CRABBOX_MACOS_REQUIRED_MAJOR`,
+`CRABBOX_MACOS_REQUIRE_XCODE`, and `CRABBOX_MACOS_REQUIRED_SWIFT_TOOLS`. The
+defaults match Swift package lanes that require `swift-tools-version: 6.2` and
+macOS 15 SDKs. Tune the WebVNC bridge wait with
 `CRABBOX_MACOS_WEBVNC_WAIT_TIMEOUT` and
 `CRABBOX_MACOS_WEBVNC_WAIT_INTERVAL`; tune the post-start grace period with
 `CRABBOX_MACOS_WEBVNC_START_GRACE`. EC2 Mac Dedicated Hosts have
@@ -294,6 +299,19 @@ wait, warmup, WebVNC daemon, and WebVNC status evidence under the run's
 `evidence/` directory.
 Override the directory with
 `CRABBOX_MACOS_ARTIFACT_DIR`.
+
+If the source lease needs operator-specific setup before smoking, pass a local
+prep script:
+
+```bash
+CRABBOX_MACOS_SOURCE_PREP_SCRIPT=scripts/private/install-xcode.sh \
+CRABBOX_MACOS_ALLOCATE=1 \
+scripts/macos-image-lifecycle-smoke.sh
+```
+
+Use that hook for private Xcode installation, license acceptance, or
+organization-specific toolchain setup. Do not put Apple credentials, download
+tokens, or private package mirrors in this repository or in baked images.
 
 If an available EC2 Mac Dedicated Host already exists, the script still stops
 after preflight unless `CRABBOX_MACOS_RUN=1` or `CRABBOX_MACOS_ALLOCATE=1` is
