@@ -192,6 +192,7 @@ prepare_cache_dirs() {
 }
 
 print_versions() {
+  hash -r 2>/dev/null || true
   sw_vers
   xcode-select -p
   xcrun --sdk macosx --show-sdk-path
