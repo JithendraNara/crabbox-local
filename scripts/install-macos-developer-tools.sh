@@ -129,6 +129,17 @@ link_tool() {
   sudo ln -sf "$src" "/usr/local/bin/$name"
 }
 
+install_brew_wrapper() {
+  local brew_path="$1"
+  if [[ "$(dirname "$brew_path")" == "/usr/local/bin" ]]; then
+    return 0
+  fi
+  sudo mkdir -p /usr/local/bin
+  sudo rm -f /usr/local/bin/brew
+  printf '#!/bin/sh\nexec %s "$@"\n' "$brew_path" | sudo tee /usr/local/bin/brew >/dev/null
+  sudo chmod 0755 /usr/local/bin/brew
+}
+
 install_node_and_pnpm() {
   local brew_prefix node_bin npm_bin corepack_bin
   brew_prefix="$(brew --prefix)"
@@ -158,7 +169,7 @@ link_common_tools() {
   if [[ ! -x "$python_bin/python3" ]]; then
     python_bin="$brew_prefix/opt/python@3.12/libexec/bin"
   fi
-  link_tool brew "$brew_prefix/bin"
+  install_brew_wrapper "$brew_prefix/bin/brew"
   link_tool git "$brew_prefix/bin"
   link_tool git-lfs "$brew_prefix/bin"
   link_tool gh "$brew_prefix/bin"
