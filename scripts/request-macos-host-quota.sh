@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/aws-account-guard.sh"
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/request-macos-host-quota.sh --quota <mac-host-quota.json> --region <aws-region> [--identity <provider-identity.json>] [--profile <aws-profile|auto>] [--desired-value <number>] [--apply]
@@ -131,58 +134,12 @@ if [[ -n "$identity_file" ]]; then
   fi
 fi
 
-aws_account_for_profile() {
-  local profile_name="$1"
-  local -a account_cmd=(aws)
-  if [[ -n "$profile_name" ]]; then
-    account_cmd+=(--profile "$profile_name")
-  fi
-  "${account_cmd[@]}" sts get-caller-identity --query Account --output text
-}
-
 if [[ "$profile" == "auto" ]]; then
   if [[ -z "$coordinator_account" ]]; then
     echo "profile auto requires --identity" >&2
     exit 2
   fi
-  selected_profile=""
-  selected_default=0
-  checked_profiles=0
-  if candidate_account="$(aws_account_for_profile "" 2>/dev/null)"; then
-    checked_profiles=$((checked_profiles + 1))
-    printf 'checked_profile=default-credentials account=%s\n' "$candidate_account" >&2
-    if [[ "$candidate_account" == "$coordinator_account" ]]; then
-      selected_default=1
-    fi
-  else
-    checked_profiles=$((checked_profiles + 1))
-    printf 'checked_profile=default-credentials status=unusable\n' >&2
-  fi
-  if [[ "$selected_default" != "1" ]]; then
-    while IFS= read -r candidate_profile; do
-      [[ -n "$candidate_profile" ]] || continue
-      checked_profiles=$((checked_profiles + 1))
-      if candidate_account="$(aws_account_for_profile "$candidate_profile" 2>/dev/null)"; then
-        printf 'checked_profile=%s account=%s\n' "$candidate_profile" "$candidate_account" >&2
-        if [[ "$candidate_account" == "$coordinator_account" ]]; then
-          selected_profile="$candidate_profile"
-          break
-        fi
-      else
-        printf 'checked_profile=%s status=unusable\n' "$candidate_profile" >&2
-      fi
-    done < <(aws configure list-profiles)
-  fi
-
-  if [[ -z "$selected_profile" && "$selected_default" != "1" ]]; then
-    printf 'refusing to request quota: no local AWS profile matches coordinator account %s after checking %s profile(s)\n' "$coordinator_account" "$checked_profiles" >&2
-    exit 1
-  fi
-  if [[ "$selected_default" == "1" ]]; then
-    profile=""
-  else
-    profile="$selected_profile"
-  fi
+  profile="$(aws_guard_select_profile_for_account "$coordinator_account" "request quota")"
 fi
 
 aws_base=(aws)
@@ -190,15 +147,7 @@ if [[ -n "$profile" ]]; then
   aws_base+=(--profile "$profile")
 fi
 
-if [[ -n "$coordinator_account" ]]; then
-  local_account="$("${aws_base[@]}" sts get-caller-identity --query Account --output text)"
-  if [[ "$local_account" != "$coordinator_account" ]]; then
-    printf 'refusing to request quota: local AWS account %s does not match coordinator account %s\n' "$local_account" "$coordinator_account" >&2
-    exit 1
-  fi
-else
-  local_account="$("${aws_base[@]}" sts get-caller-identity --query Account --output text)"
-fi
+local_account="$(aws_guard_account_for_selected_profile "$profile" "$coordinator_account" "request quota")"
 
 cmd=(
   "${aws_base[@]}"
