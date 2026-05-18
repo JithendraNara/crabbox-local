@@ -18,6 +18,7 @@
 - Added `crabbox doctor --json`, provider error classification and hints, direct-check timeout/API/mutation labels, optional `--doctor-probe-ssh`, and `scripts/live-doctor-smoke.sh` for maintainer live coverage checks.
 - Added `--slug` for `crabbox warmup`, fresh `crabbox run` leases, and `crabbox checkpoint fork`, plus `--label` for human-readable run history/timing metadata.
 - Added a light/dark mode toggle to the crabbox portal header that defaults to the system color scheme, persists the choice in local storage, and applies before first paint to avoid a flash.
+- Added a light/dark mode toggle to the Crabbox documentation site that defaults to the system color scheme, persists the choice in local storage, and applies before first paint to avoid a flash.
 - Added a reusable macOS developer-tool prep script for image bakes that verifies Command Line Tools, installs Homebrew plus common CLI tooling, activates Node 24/pnpm, and exposes stable SSH-visible tool shims.
 - Added an account-guarded EC2 Mac Dedicated Host quota request helper for turning macOS lifecycle smoke quota evidence into a dry-run or explicit AWS Service Quotas request.
 - Added a no-spend macOS coordinator remediation audit helper that bundles provider identity, IAM policy, host quota, host allocation dry-run, guarded IAM apply dry-run, and guarded quota request dry-run evidence into `summary.json`.
