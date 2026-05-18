@@ -126,6 +126,27 @@ func clearConfigEnv(t *testing.T) {
 		"CRABBOX_NAMESPACE_AUTO_STOP_IDLE_TIMEOUT",
 		"CRABBOX_NAMESPACE_WORK_ROOT",
 		"CRABBOX_NAMESPACE_DELETE_ON_RELEASE",
+		"CRABBOX_EXE_DEV_CONTROL_HOST",
+		"EXE_DEV_CONTROL_HOST",
+		"CRABBOX_EXE_DEV_IMAGE",
+		"EXE_DEV_IMAGE",
+		"CRABBOX_EXE_DEV_CPUS",
+		"CRABBOX_EXE_DEV_MEMORY",
+		"EXE_DEV_MEMORY",
+		"CRABBOX_EXE_DEV_DISK",
+		"EXE_DEV_DISK",
+		"CRABBOX_EXE_DEV_COMMAND",
+		"CRABBOX_EXE_DEV_USER",
+		"CRABBOX_EXE_DEV_WORK_ROOT",
+		"CRABBOX_EXE_DEV_NO_EMAIL",
+		"CRABBOX_RAILWAY_API_TOKEN",
+		"RAILWAY_API_TOKEN",
+		"CRABBOX_RAILWAY_API_URL",
+		"RAILWAY_API_URL",
+		"CRABBOX_RAILWAY_PROJECT_ID",
+		"RAILWAY_PROJECT_ID",
+		"CRABBOX_RAILWAY_ENVIRONMENT_ID",
+		"RAILWAY_ENVIRONMENT_ID",
 	} {
 		t.Setenv(key, "")
 	}
@@ -299,6 +320,10 @@ e2b:
   template: crabbox-ready
   workdir: work/repo
   user: sandbox
+railway:
+  apiUrl: https://railway.example.test/graphql/v2
+  projectId: project-file
+  environmentId: environment-file
 islo:
   baseUrl: https://islo.example.test
   image: docker.io/library/ubuntu:24.04
@@ -455,6 +480,9 @@ ssh:
 	if cfg.E2B.APIURL != "https://api.e2b.example.test" || cfg.E2B.Domain != "e2b.example.test" || cfg.E2B.Template != "crabbox-ready" || cfg.E2B.Workdir != "work/repo" || cfg.E2B.User != "sandbox" {
 		t.Fatalf("e2b config not loaded: %#v", cfg.E2B)
 	}
+	if cfg.Railway.APIURL != "https://railway.example.test/graphql/v2" || cfg.Railway.ProjectID != "project-file" || cfg.Railway.EnvironmentID != "environment-file" {
+		t.Fatalf("railway config not loaded: %#v", cfg.Railway)
+	}
 	if cfg.Islo.BaseURL != "https://islo.example.test" || cfg.Islo.Image != "docker.io/library/ubuntu:24.04" || cfg.Islo.Workdir != "crabbox" || cfg.Islo.GatewayProfile != "default" || cfg.Islo.SnapshotName != "snap-ready" || cfg.Islo.VCPUs != 4 || cfg.Islo.MemoryMB != 8192 || cfg.Islo.DiskGB != 40 {
 		t.Fatalf("islo config not loaded: %#v", cfg.Islo)
 	}
@@ -484,6 +512,49 @@ ssh:
 	}
 	if !cfg.Cache.Pnpm || cfg.Cache.Npm || !cfg.Cache.Docker || !cfg.Cache.Git || cfg.Cache.MaxGB != 120 || !cfg.Cache.PurgeOnRelease {
 		t.Fatalf("cache config not loaded: %#v", cfg.Cache)
+	}
+}
+
+func TestLoadConfigExeDevWorkRootDefaults(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body    string
+		want    string
+		wantExe string
+	}{
+		"default": {
+			body:    "provider: exe-dev\n",
+			want:    "/tmp/crabbox",
+			wantExe: "/tmp/crabbox",
+		},
+		"top-level": {
+			body:    "provider: exe-dev\nworkRoot: /custom/crabbox\n",
+			want:    "/custom/crabbox",
+			wantExe: "/custom/crabbox",
+		},
+		"provider-specific": {
+			body:    "provider: exe-dev\nworkRoot: /custom/crabbox\nexeDev:\n  workRoot: /exe/crabbox\n",
+			want:    "/exe/crabbox",
+			wantExe: "/exe/crabbox",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearConfigEnv(t)
+			home := t.TempDir()
+			path := filepath.Join(home, "config.yaml")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("CRABBOX_CONFIG", path)
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.WorkRoot != tc.want || cfg.ExeDev.WorkRoot != tc.wantExe {
+				t.Fatalf("workRoot=%q exeDev.workRoot=%q", cfg.WorkRoot, cfg.ExeDev.WorkRoot)
+			}
+		})
 	}
 }
 
@@ -589,6 +660,14 @@ func TestEnvOverridesConfig(t *testing.T) {
 	t.Setenv("CRABBOX_E2B_TEMPLATE", "template-env")
 	t.Setenv("CRABBOX_E2B_WORKDIR", "env-workdir")
 	t.Setenv("CRABBOX_E2B_USER", "sandbox-env")
+	t.Setenv("RAILWAY_API_TOKEN", "railway-token-file")
+	t.Setenv("CRABBOX_RAILWAY_API_TOKEN", "railway-token-env")
+	t.Setenv("RAILWAY_API_URL", "https://railway-file.example/graphql/v2")
+	t.Setenv("CRABBOX_RAILWAY_API_URL", "https://railway-env.example/graphql/v2")
+	t.Setenv("RAILWAY_PROJECT_ID", "railway-project-file")
+	t.Setenv("CRABBOX_RAILWAY_PROJECT_ID", "railway-project-env")
+	t.Setenv("RAILWAY_ENVIRONMENT_ID", "railway-environment-file")
+	t.Setenv("CRABBOX_RAILWAY_ENVIRONMENT_ID", "railway-environment-env")
 	t.Setenv("ISLO_API_KEY", "islo-api-file")
 	t.Setenv("CRABBOX_ISLO_API_KEY", "islo-api-env")
 	t.Setenv("ISLO_BASE_URL", "https://islo-file.example")
@@ -741,6 +820,9 @@ func TestEnvOverridesConfig(t *testing.T) {
 	}
 	if cfg.E2B.APIKey != "e2b-api-env" || cfg.E2B.APIURL != "https://api.e2b-env.example" || cfg.E2B.Domain != "e2b-env.example" || cfg.E2B.Template != "template-env" || cfg.E2B.Workdir != "env-workdir" || cfg.E2B.User != "sandbox-env" {
 		t.Fatalf("unexpected e2b env: %#v", cfg.E2B)
+	}
+	if cfg.Railway.APIToken != "railway-token-env" || cfg.Railway.APIURL != "https://railway-env.example/graphql/v2" || cfg.Railway.ProjectID != "railway-project-env" || cfg.Railway.EnvironmentID != "railway-environment-env" {
+		t.Fatalf("unexpected railway env: %#v", cfg.Railway)
 	}
 	if cfg.Islo.APIKey != "islo-api-env" || cfg.Islo.BaseURL != "https://islo-env.example" || cfg.Islo.Image != "ubuntu:env" || cfg.Islo.Workdir != "env-workdir" || cfg.Islo.GatewayProfile != "env-gateway" || cfg.Islo.SnapshotName != "env-snapshot" || cfg.Islo.VCPUs != 8 || cfg.Islo.MemoryMB != 16384 || cfg.Islo.DiskGB != 80 {
 		t.Fatalf("unexpected islo env: %#v", cfg.Islo)
@@ -1173,6 +1255,7 @@ func TestApplyFileJobConfigCoversJobOptions(t *testing.T) {
 		Network:     "tailscale",
 		Hydrate: &fileJobHydrateConfig{
 			Actions:          &enabled,
+			GitHubRunner:     &enabled,
 			WaitTimeout:      "12m",
 			KeepAliveMinutes: 3,
 		},
@@ -1202,7 +1285,7 @@ func TestApplyFileJobConfigCoversJobOptions(t *testing.T) {
 	if job.Desktop == nil || !*job.Desktop || job.Browser == nil || *job.Browser || job.Code == nil || !*job.Code || job.Network != "tailscale" {
 		t.Fatalf("job UI/network fields not applied: %#v", job)
 	}
-	if !job.Hydrate.Actions || job.Hydrate.WaitTimeout != 12*time.Minute || job.Hydrate.KeepAliveMinutes != 3 {
+	if !job.Hydrate.Actions || !job.Hydrate.GitHubRunner || job.Hydrate.WaitTimeout != 12*time.Minute || job.Hydrate.KeepAliveMinutes != 3 {
 		t.Fatalf("hydrate not applied: %#v", job.Hydrate)
 	}
 	if job.Actions.Repo != "openclaw/crabbox" || job.Actions.Workflow != ".github/workflows/ci.yml" || job.Actions.Job != "test" || job.Actions.Ref != "main" || len(job.Actions.Fields) != 2 {

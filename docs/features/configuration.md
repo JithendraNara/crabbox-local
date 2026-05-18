@@ -159,6 +159,7 @@ jobs:
     idleTimeout: 240m
     hydrate:
       actions: true
+      githubRunner: false
       waitTimeout: 45m
       keepAliveMinutes: 240
     actions:
@@ -180,6 +181,12 @@ crabbox job run openclaw-wsl2
 
 `job run --dry-run <name>` prints the underlying `warmup`, `actions hydrate`,
 `run`, and `stop` commands.
+
+Set `hydrate.githubRunner: true` only when the workflow needs GitHub-hosted
+runner semantics such as secrets, OIDC, service containers, or unsupported
+Actions features. When `hydrate.actions` is false or omitted, `job run` passes
+`--no-hydrate` to the nested `run` even if the global profile configures
+`actions.workflow`.
 
 ### Capacity
 
@@ -313,6 +320,25 @@ daytona:
   snapshot: openclaw-crabbox
   apiKey: <daytona-api-key>      # prefer DAYTONA_API_KEY env
 ```
+
+### exe.dev
+
+```yaml
+provider: exe-dev
+exeDev:
+  controlHost: exe.dev
+  image: ""
+  cpus: 2
+  memory: 4GB
+  disk: 10GB
+  command: ""
+  user: ""
+  workRoot: /tmp/crabbox
+  noEmail: true
+```
+
+Authenticate with `ssh exe.dev`; repo config should select VM sizing and work
+root only. VM creation requires an active exe.dev plan.
 
 ### E2B
 

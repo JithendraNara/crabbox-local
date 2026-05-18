@@ -90,6 +90,8 @@ type Config struct {
 	Namespace           NamespaceConfig
 	Daytona             DaytonaConfig
 	E2B                 E2BConfig
+	ExeDev              ExeDevConfig
+	Railway             RailwayConfig
 	Islo                IsloConfig
 	Tensorlake          TensorlakeConfig
 	Modal               ModalConfig
@@ -185,6 +187,25 @@ type E2BConfig struct {
 	Template string
 	Workdir  string
 	User     string
+}
+
+type ExeDevConfig struct {
+	ControlHost string
+	Image       string
+	CPUs        int
+	Memory      string
+	Disk        string
+	Command     string
+	User        string
+	WorkRoot    string
+	NoEmail     bool
+}
+
+type RailwayConfig struct {
+	APIToken      string
+	APIURL        string
+	ProjectID     string
+	EnvironmentID string
 }
 
 type IsloConfig struct {
@@ -345,6 +366,7 @@ type JobConfig struct {
 
 type JobHydrateConfig struct {
 	Actions          bool
+	GitHubRunner     bool
 	WaitTimeout      time.Duration
 	KeepAliveMinutes int
 }
@@ -402,6 +424,31 @@ func canonicalizeConfigProvider(cfg *Config) {
 }
 
 func applyProviderConfigDefaults(cfg *Config) {
+	if cfg.Provider == "exe-dev" || cfg.Provider == "exedev" || cfg.Provider == "exe" {
+		if cfg.ExeDev.User != "" {
+			cfg.SSHUser = cfg.ExeDev.User
+		} else if cfg.SSHUser == baseConfig().SSHUser {
+			cfg.SSHUser = getenv("USER", cfg.SSHUser)
+		}
+		if cfg.SSHPort == "" || cfg.SSHPort == baseConfig().SSHPort {
+			cfg.SSHPort = "22"
+		}
+		cfg.SSHFallbackPorts = nil
+		if cfg.ExeDev.WorkRoot == "" {
+			if !isDefaultWorkRoot(cfg.WorkRoot) {
+				cfg.ExeDev.WorkRoot = cfg.WorkRoot
+			} else {
+				cfg.ExeDev.WorkRoot = "/tmp/crabbox"
+			}
+		}
+		if cfg.ExeDev.WorkRoot != "" {
+			cfg.WorkRoot = cfg.ExeDev.WorkRoot
+		}
+		if cfg.TargetOS == "" {
+			cfg.TargetOS = targetLinux
+		}
+		return
+	}
 	if cfg.Provider != "proxmox" {
 		return
 	}
@@ -494,6 +541,16 @@ func baseConfig() Config {
 			Template: "base",
 			Workdir:  "crabbox",
 		},
+		ExeDev: ExeDevConfig{
+			ControlHost: "exe.dev",
+			CPUs:        2,
+			Memory:      "4GB",
+			Disk:        "10GB",
+			NoEmail:     true,
+		},
+		Railway: RailwayConfig{
+			APIURL: "https://backboard.railway.com/graphql/v2",
+		},
 		Islo: IsloConfig{
 			BaseURL:  "https://api.islo.dev",
 			Image:    "docker.io/library/ubuntu:24.04",
@@ -574,6 +631,8 @@ type fileConfig struct {
 	Namespace        *fileNamespaceConfig               `yaml:"namespace,omitempty"`
 	Daytona          *fileDaytonaConfig                 `yaml:"daytona,omitempty"`
 	E2B              *fileE2BConfig                     `yaml:"e2b,omitempty"`
+	ExeDev           *fileExeDevConfig                  `yaml:"exeDev,omitempty"`
+	Railway          *fileRailwayConfig                 `yaml:"railway,omitempty"`
 	Islo             *fileIsloConfig                    `yaml:"islo,omitempty"`
 	Tensorlake       *fileTensorlakeConfig              `yaml:"tensorlake,omitempty"`
 	Modal            *fileModalConfig                   `yaml:"modal,omitempty"`
@@ -758,6 +817,24 @@ type fileE2BConfig struct {
 	Template string `yaml:"template,omitempty"`
 	Workdir  string `yaml:"workdir,omitempty"`
 	User     string `yaml:"user,omitempty"`
+}
+
+type fileExeDevConfig struct {
+	ControlHost string `yaml:"controlHost,omitempty"`
+	Image       string `yaml:"image,omitempty"`
+	CPUs        int    `yaml:"cpus,omitempty"`
+	Memory      string `yaml:"memory,omitempty"`
+	Disk        string `yaml:"disk,omitempty"`
+	Command     string `yaml:"command,omitempty"`
+	User        string `yaml:"user,omitempty"`
+	WorkRoot    string `yaml:"workRoot,omitempty"`
+	NoEmail     *bool  `yaml:"noEmail,omitempty"`
+}
+
+type fileRailwayConfig struct {
+	APIURL        string `yaml:"apiUrl,omitempty"`
+	ProjectID     string `yaml:"projectId,omitempty"`
+	EnvironmentID string `yaml:"environmentId,omitempty"`
 }
 
 type fileIsloConfig struct {
@@ -1000,6 +1077,7 @@ type fileJobConfig struct {
 
 type fileJobHydrateConfig struct {
 	Actions          *bool  `yaml:"actions,omitempty"`
+	GitHubRunner     *bool  `yaml:"githubRunner,omitempty"`
 	WaitTimeout      string `yaml:"waitTimeout,omitempty"`
 	KeepAliveMinutes int    `yaml:"keepAliveMinutes,omitempty"`
 }
@@ -1524,6 +1602,46 @@ func applyFileConfig(cfg *Config, file fileConfig) {
 			cfg.E2B.User = file.E2B.User
 		}
 	}
+	if file.ExeDev != nil {
+		if file.ExeDev.ControlHost != "" {
+			cfg.ExeDev.ControlHost = file.ExeDev.ControlHost
+		}
+		if file.ExeDev.Image != "" {
+			cfg.ExeDev.Image = file.ExeDev.Image
+		}
+		if file.ExeDev.CPUs > 0 {
+			cfg.ExeDev.CPUs = file.ExeDev.CPUs
+		}
+		if file.ExeDev.Memory != "" {
+			cfg.ExeDev.Memory = file.ExeDev.Memory
+		}
+		if file.ExeDev.Disk != "" {
+			cfg.ExeDev.Disk = file.ExeDev.Disk
+		}
+		if file.ExeDev.Command != "" {
+			cfg.ExeDev.Command = file.ExeDev.Command
+		}
+		if file.ExeDev.User != "" {
+			cfg.ExeDev.User = file.ExeDev.User
+		}
+		if file.ExeDev.WorkRoot != "" {
+			cfg.ExeDev.WorkRoot = file.ExeDev.WorkRoot
+		}
+		if file.ExeDev.NoEmail != nil {
+			cfg.ExeDev.NoEmail = *file.ExeDev.NoEmail
+		}
+	}
+	if file.Railway != nil {
+		if file.Railway.APIURL != "" {
+			cfg.Railway.APIURL = file.Railway.APIURL
+		}
+		if file.Railway.ProjectID != "" {
+			cfg.Railway.ProjectID = file.Railway.ProjectID
+		}
+		if file.Railway.EnvironmentID != "" {
+			cfg.Railway.EnvironmentID = file.Railway.EnvironmentID
+		}
+	}
 	if file.Islo != nil {
 		if file.Islo.BaseURL != "" {
 			cfg.Islo.BaseURL = file.Islo.BaseURL
@@ -1919,6 +2037,9 @@ func applyFileJobConfig(job JobConfig, file fileJobConfig) JobConfig {
 		if file.Hydrate.Actions != nil {
 			job.Hydrate.Actions = *file.Hydrate.Actions
 		}
+		if file.Hydrate.GitHubRunner != nil {
+			job.Hydrate.GitHubRunner = *file.Hydrate.GitHubRunner
+		}
 		if file.Hydrate.WaitTimeout != "" {
 			if duration, err := time.ParseDuration(file.Hydrate.WaitTimeout); err == nil {
 				job.Hydrate.WaitTimeout = duration
@@ -2159,6 +2280,21 @@ func applyEnv(cfg *Config) {
 	cfg.E2B.Template = getenv("CRABBOX_E2B_TEMPLATE", cfg.E2B.Template)
 	cfg.E2B.Workdir = getenv("CRABBOX_E2B_WORKDIR", cfg.E2B.Workdir)
 	cfg.E2B.User = getenv("CRABBOX_E2B_USER", cfg.E2B.User)
+	cfg.ExeDev.ControlHost = getenv("CRABBOX_EXE_DEV_CONTROL_HOST", getenv("EXE_DEV_CONTROL_HOST", cfg.ExeDev.ControlHost))
+	cfg.ExeDev.Image = getenv("CRABBOX_EXE_DEV_IMAGE", getenv("EXE_DEV_IMAGE", cfg.ExeDev.Image))
+	cfg.ExeDev.CPUs = getenvInt("CRABBOX_EXE_DEV_CPUS", cfg.ExeDev.CPUs)
+	cfg.ExeDev.Memory = getenv("CRABBOX_EXE_DEV_MEMORY", getenv("EXE_DEV_MEMORY", cfg.ExeDev.Memory))
+	cfg.ExeDev.Disk = getenv("CRABBOX_EXE_DEV_DISK", getenv("EXE_DEV_DISK", cfg.ExeDev.Disk))
+	cfg.ExeDev.Command = getenv("CRABBOX_EXE_DEV_COMMAND", cfg.ExeDev.Command)
+	cfg.ExeDev.User = getenv("CRABBOX_EXE_DEV_USER", cfg.ExeDev.User)
+	cfg.ExeDev.WorkRoot = getenv("CRABBOX_EXE_DEV_WORK_ROOT", cfg.ExeDev.WorkRoot)
+	if value, ok := getenvBool("CRABBOX_EXE_DEV_NO_EMAIL"); ok {
+		cfg.ExeDev.NoEmail = value
+	}
+	cfg.Railway.APIToken = getenv("CRABBOX_RAILWAY_API_TOKEN", getenv("RAILWAY_API_TOKEN", cfg.Railway.APIToken))
+	cfg.Railway.APIURL = getenv("CRABBOX_RAILWAY_API_URL", getenv("RAILWAY_API_URL", cfg.Railway.APIURL))
+	cfg.Railway.ProjectID = getenv("CRABBOX_RAILWAY_PROJECT_ID", getenv("RAILWAY_PROJECT_ID", cfg.Railway.ProjectID))
+	cfg.Railway.EnvironmentID = getenv("CRABBOX_RAILWAY_ENVIRONMENT_ID", getenv("RAILWAY_ENVIRONMENT_ID", cfg.Railway.EnvironmentID))
 	cfg.Islo.APIKey = getenv("CRABBOX_ISLO_API_KEY", getenv("ISLO_API_KEY", cfg.Islo.APIKey))
 	cfg.Islo.BaseURL = getenv("CRABBOX_ISLO_BASE_URL", getenv("ISLO_BASE_URL", cfg.Islo.BaseURL))
 	cfg.Islo.Image = getenv("CRABBOX_ISLO_IMAGE", cfg.Islo.Image)
@@ -2324,6 +2460,9 @@ func serverTypeForConfig(cfg Config) string {
 	if cfg.Provider == "e2b" {
 		return blank(cfg.E2B.Template, "base")
 	}
+	if cfg.Provider == "exe-dev" || cfg.Provider == "exedev" || cfg.Provider == "exe" {
+		return blank(cfg.ExeDev.Image, "default")
+	}
 	if cfg.Provider == "modal" {
 		return blank(cfg.Modal.Image, "python:3.13-slim")
 	}
@@ -2360,6 +2499,9 @@ func serverTypeForProviderClass(provider, class string) string {
 	}
 	if provider == "e2b" {
 		return "base"
+	}
+	if provider == "exe-dev" {
+		return "default"
 	}
 	if provider == "modal" {
 		return "python:3.13-slim"

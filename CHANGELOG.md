@@ -1,18 +1,24 @@
 # Changelog
 
-## 0.15.1 - Unreleased
+## 0.16.0 - 2026-05-18
 
 ### Added
 
+- Added a light/dark mode toggle to the crabbox portal header that defaults to the system color scheme, persists the choice in local storage, and applies before first paint to avoid a flash.
 - Added an account-guarded EC2 Mac Dedicated Host quota request helper for turning macOS lifecycle smoke quota evidence into a dry-run or explicit AWS Service Quotas request.
 - Added a no-spend macOS coordinator remediation audit helper that bundles provider identity, IAM policy, host quota, host allocation dry-run, guarded IAM apply dry-run, and guarded quota request dry-run evidence into `summary.json`.
+- Added `provider: exe-dev` for exe.dev VM SSH leases through the exe.dev SSH API, including Crabbox sync/run, `crabbox ssh`, and provider docs.
+- Added the Railway delegated provider for redeploying an existing Railway service, streaming build/runtime logs, and reporting deployment status through `crabbox run`, `status`, `stop`, and `list`. Thanks @zozo123.
+- Added direct `crabbox doctor --provider exe-dev` readiness through the exe.dev inventory API without creating VMs.
 - Added Cloudflare runner readiness to `crabbox doctor --provider cloudflare` so runner URL, auth, and container bindings are checked without creating a sandbox. Thanks @altaywtf.
 - Added direct `crabbox doctor` readiness for all built-in providers without creating provider resources.
+- Added `crabbox doctor --json`, provider error classification and hints, direct-check timeout/API/mutation labels, optional `--doctor-probe-ssh`, and `scripts/live-doctor-smoke.sh` for maintainer live coverage checks.
 - Added `--slug` for `crabbox warmup`, fresh `crabbox run` leases, and `crabbox checkpoint fork`, plus `--label` for human-readable run history/timing metadata.
 - Added a reusable macOS developer-tool prep script for image bakes that verifies Command Line Tools, installs Homebrew plus common CLI tooling, activates Node 24/pnpm, and exposes stable SSH-visible tool shims.
 
 ### Changed
 
+- Changed Actions hydration to run repo workflow setup locally over SSH by default, auto-hydrate `crabbox run` when `actions.workflow` is configured, and keep GitHub self-hosted runner registration behind `--github-runner` fallback.
 - Clarified WebVNC docs to include coordinator-backed AWS macOS desktop leases in the supported portal bridge surface.
 - Changed AWS macOS AMI selection so newer `mac-m*` EC2 Mac leases use macOS 15 images while `mac2*` and legacy `mac1.metal` continue using launchable macOS 14 images.
 - Hardened macOS image lifecycle smoke so source, candidate, and promoted images must expose Command Line Tools-compatible Apple developer tools, Swift, Homebrew, and common Node/pnpm developer tooling before promotion, with stricter macOS 15 and Swift tools 6.2 defaults for `mac-m*` host families.

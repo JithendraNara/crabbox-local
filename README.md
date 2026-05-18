@@ -34,6 +34,8 @@ Supported providers:
   VM clones from private Proxmox VE templates.
 - [Static SSH](docs/providers/ssh.md) (`provider: ssh`): existing Linux, macOS,
   Windows, or WSL2 hosts.
+- [exe.dev](docs/providers/exe-dev.md) (`provider: exe-dev`): exe.dev VMs
+  exposed as normal SSH leases.
 - [Blacksmith Testbox](docs/providers/blacksmith-testbox.md)
   (`provider: blacksmith-testbox`): delegated Testbox lifecycle and execution.
 - [Namespace Devbox](docs/providers/namespace-devbox.md)
@@ -55,6 +57,9 @@ Supported providers:
 - [Cloudflare](docs/providers/cloudflare.md)
   (`provider: cloudflare`): delegated Cloudflare execution through a Worker and
   container runner.
+- [Railway](docs/providers/railway.md) (`provider: railway`): delegated
+  redeploy-and-stream execution against a pre-existing Railway service through
+  the [Railway](https://railway.com) GraphQL API.
 
 ---
 
@@ -130,6 +135,7 @@ For the full mental model, see [How Crabbox Works](docs/how-it-works.md). For th
 - **Brokered cloud.** Maintainers and agents share infra without sharing provider tokens. Hetzner, AWS EC2, Azure, and Google Cloud are managed providers; AWS owns EC2 Mac targets. Linux defaults to Spot unless capacity config says otherwise. Providers fall back across compatible instance families when capacity or quota rejects a request. See [Coordinator](docs/features/coordinator.md) and [Capacity fallback](docs/features/capacity-fallback.md).
 - **Azure Linux and Windows.** `provider: azure` provisions Linux, native Windows, and Windows WSL2 VMs in a configurable Azure subscription using `DefaultAzureCredential` in direct mode or service-principal secrets in the broker. Crabbox creates a shared resource group, vnet, subnet, and NSG on first use, then per-lease public IPs, NICs, and VMs. Linux uses cloud-init; Windows uses VM Agent Custom Script Extension to install OpenSSH/Git and configure the Crabbox user, with optional post-SSH desktop/VNC or WSL2 bootstrap. See [Azure provider](docs/providers/azure.md).
 - **macOS and Windows static hosts.** `provider: ssh` reuses existing machines; it does not create macOS or Windows Crabbox boxes. macOS and Windows WSL2 use the POSIX rsync path; native Windows uses PowerShell plus tar archive sync. See [Static SSH provider](docs/providers/ssh.md).
+- **exe.dev SSH leases.** Set `provider: exe-dev` to create exe.dev VMs through the exe.dev SSH API, then let Crabbox sync and run commands over the returned VM SSH target. See [exe.dev](docs/providers/exe-dev.md).
 - **Blacksmith Testbox wrapper.** Set `provider: blacksmith-testbox` to delegate warmup/run/list/status/stop to the Blacksmith CLI while Crabbox keeps local slugs, repo claims, timing summaries, config conventions, and portal visibility for active external runners. See [Blacksmith Testbox](docs/providers/blacksmith-testbox.md).
 - **Namespace Devbox SSH leases.** Set `provider: namespace-devbox` to create or reuse Namespace Devboxes through the `devbox` CLI, then let Crabbox sync the dirty checkout and run commands over SSH. See [Namespace Devbox](docs/providers/namespace-devbox.md).
 - **Semaphore CI testbox.** Set `provider: semaphore` to lease a Semaphore CI job as a testbox. Same environment as your real pipelines. See [Semaphore](docs/providers/semaphore.md).
@@ -145,7 +151,7 @@ For the full mental model, see [How Crabbox Works](docs/how-it-works.md). For th
 - **Cloudflare.** Set `provider: cloudflare` for delegated execution through a Worker runner and custom container image. See [Cloudflare](docs/providers/cloudflare.md).
 - **Trusted AWS images.** Operators can create AMIs from active brokered AWS leases and promote a known-good image as the coordinator default. See [Image bake runbook](docs/features/image-bake-runbook.md) and [Prebaked images](docs/features/prebaked-images.md).
 - **Cost guardrails.** Per-lease and monthly spend caps. Live pricing from EC2 Spot history or Hetzner server-type prices, with static fallbacks. `crabbox usage` summarizes spend by user, org, provider, and type. See [Cost and usage](docs/features/cost-usage.md).
-- **GitHub Actions hydration.** `crabbox actions hydrate` registers a leased box as an ephemeral Actions runner, so the repo's own workflow installs runtimes, services, and secrets. Crabbox does not parse Actions YAML. See [Actions hydration](docs/features/actions-hydration.md).
+- **GitHub Actions hydration.** `crabbox actions hydrate` runs supported setup steps from the repo's workflow locally over SSH, so leased boxes get the same runtimes and project tooling without GitHub write access. Use `--github-runner` only when setup needs full Actions semantics such as repository secrets, OIDC, service containers, or unsupported `uses:` steps. See [Actions hydration](docs/features/actions-hydration.md).
 - **Interactive desktop and browser leases.** `--browser` provisions Chrome or Chromium for headless automation, `--desktop` provisions visible UI with tunnel-only VNC takeover on managed Linux, native Windows on AWS or Azure, and AWS EC2 Mac targets. `crabbox desktop doctor` checks session, VNC, input tooling, browser, ffmpeg, screen size, screenshot capture, and WebVNC portal state; `desktop click/paste/type/key` provide first-class input helpers so agents do not hand-roll brittle `xdotool` snippets. `desktop proof` launches a terminal smoke and captures metadata, screenshot, diagnostics, MP4, and a contact-sheet PNG in one bundle that can be published to a PR; MP4 capture is Linux/native Windows only for now. QA systems such as Mantis own scenario logic, screenshots, and PR evidence. Windows WSL2 is for POSIX sync/run/actions hydration, not a separate VNC desktop; existing Windows hosts belong on `provider: ssh`. See [Interactive desktop and VNC](docs/features/interactive-desktop-vnc.md).
 - **Authenticated web portal.** Browser login opens owner-scoped and explicitly shared lease/run views with searchable, paginated tables, muted external-runner rows, compact provider/OS/access icons, relative sortable times, recent run logs/events, WebVNC, code-server, and Linux lease/run telemetry charts. `crabbox share` can grant a lease to one user or the owning org, and the lease page exposes the same sharing controls for owners/managers. WebVNC is preferred for human demos because it preloads the VNC password; `webvnc status` reports local daemon, tunnel, target reachability, bridge/viewer state, recent events, URL/password, and native VNC fallback, while `webvnc reset` restarts only the selected lease's WebVNC/input stack. Admin sessions can also see non-owned runner leases behind `mine`/`system` filters. See [Portal](docs/features/portal.md).
 - **Agent workspace evidence.** History, logs, events, telemetry, JUnit summaries, screenshots, recordings, artifacts, and PR publishing make autonomous work reviewable instead of only ephemeral terminal output. See [Artifacts](docs/features/artifacts.md) and [Telemetry](docs/features/telemetry.md).
@@ -281,6 +287,19 @@ daytona:
   snapshot: crabbox-ready
   workRoot: /home/daytona/crabbox
 ```
+
+Optional exe.dev VM:
+
+```yaml
+provider: exe-dev
+exeDev:
+  cpus: 2
+  memory: 4GB
+  disk: 10GB
+  workRoot: /tmp/crabbox
+```
+
+Authenticate with `ssh exe.dev`; VM creation requires an active exe.dev plan.
 
 Optional Islo sandbox:
 
