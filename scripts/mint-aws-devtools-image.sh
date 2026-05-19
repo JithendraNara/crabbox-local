@@ -13,6 +13,7 @@ idle_timeout="${CRABBOX_IMAGE_IDLE_TIMEOUT:-30m}"
 wait_timeout="${CRABBOX_IMAGE_WAIT_TIMEOUT:-60m}"
 reboot_wait_timeout="${CRABBOX_IMAGE_REBOOT_WAIT_TIMEOUT:-25m}"
 reboot_settle_seconds="${CRABBOX_IMAGE_REBOOT_SETTLE_SECONDS:-30}"
+reboot_ready_settle_seconds="${CRABBOX_IMAGE_REBOOT_READY_SETTLE_SECONDS:-180}"
 windows_warmup_wait_timeout="${CRABBOX_IMAGE_WINDOWS_WARMUP_WAIT_TIMEOUT:-15m}"
 windows_warmup_settle_seconds="${CRABBOX_IMAGE_WINDOWS_WARMUP_SETTLE_SECONDS:-90}"
 run="${CRABBOX_IMAGE_RUN:-0}"
@@ -56,6 +57,7 @@ Useful env:
   CRABBOX_IMAGE_WAIT_TIMEOUT
   CRABBOX_IMAGE_REBOOT_WAIT_TIMEOUT
   CRABBOX_IMAGE_REBOOT_SETTLE_SECONDS
+  CRABBOX_IMAGE_REBOOT_READY_SETTLE_SECONDS
   CRABBOX_IMAGE_WINDOWS_WARMUP_WAIT_TIMEOUT
   CRABBOX_IMAGE_WINDOWS_WARMUP_SETTLE_SECONDS
 USAGE
@@ -222,6 +224,35 @@ wait_windows_ssh_probe() {
   done
 }
 
+wait_windows_reboot_ready() {
+  local lease="$1"
+  wait_windows_ssh_probe "$lease" "$reboot_wait_timeout"
+  if ((reboot_ready_settle_seconds > 0)); then
+    printf 'Windows SSH responded after reboot; settling for %ss before continuing\n' "$reboot_ready_settle_seconds" >&2
+    sleep "$reboot_ready_settle_seconds"
+    wait_windows_ssh_probe "$lease" "$reboot_wait_timeout"
+  fi
+}
+
+run_windows_shell_retry() {
+  local lease="$1"
+  local label="$2"
+  local command="$3"
+  local attempt
+  for attempt in 1 2 3; do
+    if run_cmd "$CRABBOX_BIN" run --provider aws --target windows --id "$lease" --no-sync --shell -- "$command"; then
+      return 0
+    fi
+    if ((attempt == 3)); then
+      break
+    fi
+    printf 'Windows command failed during %s; waiting for SSH before retry %s/3\n' "$label" "$((attempt + 1))" >&2
+    wait_windows_ssh_probe "$lease" "$reboot_wait_timeout"
+    sleep 15
+  done
+  return 1
+}
+
 warmup_args() {
   printf '%s\0' warmup --provider aws --target "$target" --class "$server_class" --market on-demand --ttl "$ttl" --idle-timeout "$idle_timeout" --timing-json
   [[ -n "$server_type" ]] && printf '%s\0' --type "$server_type"
@@ -344,25 +375,28 @@ smoke() {
 run_prep() {
   local lease="$1"
   if [[ "$target" == "windows" ]]; then
-    local encoded chunk_size offset chunk remote_b64 remote_script command decode_and_run
+    local encoded chunk_size offset chunk remote_dir remote_script command decode_and_run part_index part_name
     encoded="$(base64 <"$prep_script" | tr -d '\n')"
     chunk_size=1800
-    remote_b64='C:\ProgramData\crabbox\image-prep.b64'
+    remote_dir='C:\ProgramData\crabbox'
     remote_script='C:\ProgramData\crabbox\image-prep.ps1'
-    decode_and_run="; \$__crabboxPrep = Get-Content -Raw '$remote_b64'; [IO.File]::WriteAllBytes('$remote_script', [Convert]::FromBase64String(\$__crabboxPrep)); powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '$remote_script'; exit \$LASTEXITCODE"
-    run_cmd "$CRABBOX_BIN" run --provider aws --target windows --id "$lease" --no-sync --shell -- "New-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\crabbox' | Out-Null; Set-Content -Path '$remote_b64' -Value '' -NoNewline"
+    decode_and_run="; \$__crabboxParts = Get-ChildItem -Path '$remote_dir' -Filter 'image-prep.part-*' | Sort-Object Name; \$__crabboxPrep = (\$__crabboxParts | ForEach-Object { Get-Content -Raw \$_.FullName }) -join ''; [IO.File]::WriteAllBytes('$remote_script', [Convert]::FromBase64String(\$__crabboxPrep)); powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '$remote_script'; exit \$LASTEXITCODE"
+    run_windows_shell_retry "$lease" "prep upload init" "New-Item -ItemType Directory -Force -Path '$remote_dir' | Out-Null; Remove-Item -Path '$remote_dir\\image-prep.part-*' -Force -ErrorAction SilentlyContinue"
+    part_index=0
     for ((offset = 0; offset < ${#encoded}; offset += chunk_size)); do
       chunk="${encoded:offset:chunk_size}"
-      command="Add-Content -Path '$remote_b64' -Value '$chunk' -NoNewline"
+      printf -v part_name 'image-prep.part-%05d' "$part_index"
+      command="Set-Content -Path '$remote_dir\\$part_name' -Value '$chunk' -NoNewline"
       if ((offset + chunk_size >= ${#encoded})); then
         command+="$decode_and_run"
       fi
-      if ! run_cmd "$CRABBOX_BIN" run --provider aws --target windows --id "$lease" --no-sync --shell -- "$command"; then
+      if ! run_windows_shell_retry "$lease" "prep upload $part_name" "$command"; then
         if ((offset + chunk_size >= ${#encoded})) && recover_windows_prep_disconnect "$lease"; then
           return 0
         fi
         return 1
       fi
+      part_index=$((part_index + 1))
     done
     return
   fi
@@ -402,7 +436,7 @@ reboot_windows_source_if_needed() {
   printf 'Windows source lease requires reboot before Docker image pull/proof\n' >&2
   run_cmd "$CRABBOX_BIN" run --provider aws --target windows --id "$lease" --no-sync --shell -- 'shutdown /r /t 5 /f; Write-Output "reboot scheduled"'
   sleep "$reboot_settle_seconds"
-  wait_windows_ssh_probe "$lease" "$reboot_wait_timeout"
+  wait_windows_reboot_ready "$lease"
   run_prep "$lease"
   if windows_reboot_required "$lease"; then
     printf 'Windows prep still requires reboot after one reboot cycle\n' >&2

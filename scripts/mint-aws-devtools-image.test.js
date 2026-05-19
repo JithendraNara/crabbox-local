@@ -121,6 +121,7 @@ test("AWS devtools mint wrapper runs linux source candidate and promoted proof",
       CRABBOX_BIN: fake.fake,
       CRABBOX_FAKE_LOG: fake.log,
       CRABBOX_IMAGE_WINDOWS_WARMUP_SETTLE_SECONDS: "0",
+      CRABBOX_IMAGE_REBOOT_READY_SETTLE_SECONDS: "0",
     },
   );
   assert.equal(result.code, 0, result.stderr);
@@ -170,7 +171,7 @@ test("AWS devtools mint wrapper maps windows flags", async () => {
   assert.doesNotMatch(log, /warmup .*--region us-east-1/);
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Write-Output "windows-ssh-ready"/);
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- New-Item/);
-  assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Add-Content/);
+  assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Set-Content/);
   assert.match(log, /FromBase64String/);
   assert.doesNotMatch(log, /image promote/);
 });
@@ -195,6 +196,7 @@ test("AWS devtools mint wrapper reboots windows source when prep requires it", a
       CRABBOX_FAKE_LOG: fake.log,
       CRABBOX_FAKE_WINDOWS_REBOOT: "1",
       CRABBOX_IMAGE_REBOOT_SETTLE_SECONDS: "0",
+      CRABBOX_IMAGE_REBOOT_READY_SETTLE_SECONDS: "0",
       CRABBOX_IMAGE_WINDOWS_WARMUP_SETTLE_SECONDS: "0",
     },
   );
@@ -203,11 +205,11 @@ test("AWS devtools mint wrapper reboots windows source when prep requires it", a
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- if \(Test-Path/);
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- shutdown \/r \/t 5 \/f/);
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Write-Output "windows-ssh-ready"/);
-  assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Add-Content/);
+  assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Set-Content/);
   assert.match(log, /FromBase64String/);
 });
 
-test("AWS devtools mint wrapper recovers windows prep disconnects with reboot marker", async () => {
+test("AWS devtools mint wrapper retries windows prep upload disconnects", async () => {
   const fake = await setupFakeCrabbox();
   const result = await runScript(
     [
@@ -228,11 +230,12 @@ test("AWS devtools mint wrapper recovers windows prep disconnects with reboot ma
       CRABBOX_FAKE_WINDOWS_PREP_DISCONNECT: "1",
       CRABBOX_FAKE_WINDOWS_REBOOT: "1",
       CRABBOX_IMAGE_REBOOT_SETTLE_SECONDS: "0",
+      CRABBOX_IMAGE_REBOOT_READY_SETTLE_SECONDS: "0",
       CRABBOX_IMAGE_WINDOWS_WARMUP_SETTLE_SECONDS: "0",
     },
   );
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stderr, /Windows prep command failed or disconnected; checking whether a planned Docker reboot is pending/);
+  assert.match(result.stderr, /Windows command failed during prep upload image-prep\.part-/);
   const log = await readFile(fake.log, "utf8");
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- Write-Output "windows-ssh-ready"/);
   assert.match(log, /run --provider aws --target windows --id cbx_source --no-sync --shell -- if \(Test-Path/);
