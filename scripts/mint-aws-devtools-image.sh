@@ -338,10 +338,10 @@ wait_windows_prep_task() {
     status=0
     output="$("$CRABBOX_BIN" run --provider aws --target windows --id "$lease" --no-sync --shell -- "$status_command" 2>&1)" || status=$?
     printf '%s\n' "$output" >&2
-    if grep -q 'crabbox-prep-done' <<<"$output"; then
+    if grep -qx 'crabbox-prep-done' <<<"$output"; then
       return 0
     fi
-    if grep -q 'crabbox-prep-failed' <<<"$output"; then
+    if grep -qx 'crabbox-prep-failed' <<<"$output"; then
       return 1
     fi
     if ((SECONDS >= deadline)); then
