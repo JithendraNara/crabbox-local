@@ -12,9 +12,9 @@ import (
 )
 
 // Polling configuration for waiting on a freshly deployed pod to expose its
-// public SSH port. RunPod typically reports runtime.ports within tens of
-// seconds for CPU pods; cap at 10 minutes to stay well under bootstrap
-// timeouts while leaving slack for cold scheduler regions.
+// public SSH port. RunPod typically reports publicIp/portMappings within tens
+// of seconds; cap at 10 minutes to stay under bootstrap timeouts while leaving
+// slack for cold scheduler regions.
 const (
 	runpodSSHPollInitial = 3 * time.Second
 	runpodSSHPollMax     = 15 * time.Second
@@ -52,6 +52,14 @@ type runpodLeaseBackend struct {
 	pollTimeoutOverride time.Duration
 }
 
+type runpodSSHEndpoint struct {
+	Host   string
+	Port   int
+	User   string
+	Kind   string
+	Public bool
+}
+
 func NewRunpodLeaseBackend(spec ProviderSpec, cfg Config, rt Runtime) Backend {
 	cfg.Provider = providerName
 	applyRunpodDefaults(&cfg)
@@ -79,7 +87,7 @@ func (b *runpodLeaseBackend) Acquire(ctx context.Context, req AcquireRequest) (L
 	fmt.Fprintf(b.rt.Stderr, "provisioning provider=%s lease=%s slug=%s name=%s image=%s instance=%s disk=%dGB keep=%v\n",
 		providerName, leaseID, slug, name, cfg.Runpod.Image, cfg.Runpod.InstanceID, cfg.Runpod.DiskGB, req.Keep)
 
-	pod, err := client.DeployCpuPod(ctx, runpodDeployInput{
+	pod, err := client.DeployPod(ctx, runpodDeployInput{
 		Name:              name,
 		ImageName:         cfg.Runpod.Image,
 		InstanceID:        cfg.Runpod.InstanceID,
@@ -90,7 +98,7 @@ func (b *runpodLeaseBackend) Acquire(ctx context.Context, req AcquireRequest) (L
 		StartSSH:          true,
 	})
 	if err != nil {
-		return LeaseTarget{}, exit(1, "runpod deployCpuPod failed: %v", err)
+		return LeaseTarget{}, exit(1, "runpod create pod failed: %v", err)
 	}
 
 	ready, err := b.waitForPodSSH(ctx, client, pod.ID)
@@ -225,22 +233,19 @@ func applyRunpodDefaults(cfg *Config) {
 		cfg.TargetOS = targetLinux
 	}
 	if cfg.Runpod.APIURL == "" {
-		cfg.Runpod.APIURL = "https://api.runpod.io/graphql"
+		cfg.Runpod.APIURL = "https://rest.runpod.io/v1"
 	}
 	if cfg.Runpod.CloudType == "" {
-		cfg.Runpod.CloudType = "ALL"
+		cfg.Runpod.CloudType = "SECURE"
 	}
 	if cfg.Runpod.InstanceID == "" {
-		// Cheapest documented CPU flavor at the time of writing: cpu3c
-		// (compute-optimized) with 2 vCPU and 4 GB RAM. Documented in
-		// docs/providers/runpod.md so callers can override knowingly.
-		cfg.Runpod.InstanceID = "cpu3c-2-4"
+		cfg.Runpod.InstanceID = "NVIDIA L4,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A4500"
 	}
 	if cfg.Runpod.Image == "" {
-		cfg.Runpod.Image = "runpod/base:0.6.2"
+		cfg.Runpod.Image = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 	}
 	if cfg.Runpod.DiskGB <= 0 {
-		cfg.Runpod.DiskGB = 10
+		cfg.Runpod.DiskGB = 20
 	}
 	if cfg.Runpod.WorkRoot == "" {
 		if !isDefaultWorkRoot(cfg.WorkRoot) {
@@ -287,8 +292,8 @@ func (b *runpodLeaseBackend) waitForPodSSH(ctx context.Context, client runpodAPI
 			}
 			return runpodPod{}, err
 		}
-		host, port := pod.SSHEndpoint()
-		if host != "" && port != 0 {
+		endpoint := pod.SSHEndpoint()
+		if endpoint.Host != "" && endpoint.Port != 0 && (endpoint.Public || strings.EqualFold(pod.DesiredStatus, "RUNNING")) {
 			return pod, nil
 		}
 		sleepFor := runpodJitter(interval)
@@ -310,6 +315,15 @@ func (b *runpodLeaseBackend) prepareLease(ctx context.Context, cfg Config, pod r
 	server := runpodServer(pod, leaseID, slug, cfg, keep)
 	target := runpodSSHTarget(cfg, pod)
 	if wait {
+		bootstrapTarget := target
+		bootstrapTarget.ReadyCheck = "true"
+		if err := waitForSSHReady(ctx, &bootstrapTarget, b.rt.Stderr, "runpod pod ssh", bootstrapWaitTimeout(cfg)); err != nil {
+			return LeaseTarget{}, err
+		}
+		target.Port = bootstrapTarget.Port
+		if err := b.bootstrapRunpodTools(ctx, target); err != nil {
+			return LeaseTarget{}, err
+		}
 		if err := waitForSSHReady(ctx, &target, b.rt.Stderr, "runpod pod ssh", bootstrapWaitTimeout(cfg)); err != nil {
 			return LeaseTarget{}, err
 		}
@@ -319,6 +333,35 @@ func (b *runpodLeaseBackend) prepareLease(ctx context.Context, cfg Config, pod r
 		}
 	}
 	return LeaseTarget{Server: server, SSH: target, LeaseID: leaseID}, nil
+}
+
+func (b *runpodLeaseBackend) bootstrapRunpodTools(ctx context.Context, target SSHTarget) error {
+	if b.rt.Stderr != nil {
+		fmt.Fprintln(b.rt.Stderr, "bootstrapping runpod pod tools")
+	}
+	if err := runSSHQuiet(ctx, target, runpodBootstrapToolsCommand()); err != nil {
+		return exit(1, "runpod pod tool bootstrap failed: %v", err)
+	}
+	return nil
+}
+
+func runpodBootstrapToolsCommand() string {
+	return strings.Join([]string{
+		"set -e",
+		"if command -v git >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then exit 0; fi",
+		"SUDO=; if [ \"$(id -u)\" != 0 ]; then SUDO=sudo; fi",
+		"if command -v apt-get >/dev/null 2>&1; then",
+		"  $SUDO apt-get update >/tmp/crabbox-runpod-apt-update.log 2>&1",
+		"  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git rsync tar >/tmp/crabbox-runpod-apt-install.log 2>&1",
+		"elif command -v dnf >/dev/null 2>&1; then",
+		"  $SUDO dnf install -y git rsync tar >/tmp/crabbox-runpod-dnf-install.log 2>&1",
+		"elif command -v yum >/dev/null 2>&1; then",
+		"  $SUDO yum install -y git rsync tar >/tmp/crabbox-runpod-yum-install.log 2>&1",
+		"elif command -v apk >/dev/null 2>&1; then",
+		"  $SUDO apk add --no-cache git rsync tar >/tmp/crabbox-runpod-apk-install.log 2>&1",
+		"fi",
+		"command -v git >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null",
+	}, "\n")
 }
 
 func (b *runpodLeaseBackend) resolvePod(ctx context.Context, client runpodAPI, identifier string) (runpodPod, string, string, error) {
@@ -422,12 +465,18 @@ func runpodServer(pod runpodPod, leaseID, slug string, cfg Config, keep bool) Se
 	if pod.Machine.PodHostID != "" {
 		labels["pod_host_id"] = pod.Machine.PodHostID
 	}
-	host, port := pod.SSHEndpoint()
-	if host != "" {
-		labels["ssh_host"] = host
+	endpoint := pod.SSHEndpoint()
+	if endpoint.Host != "" {
+		labels["ssh_host"] = endpoint.Host
 	}
-	if port != 0 {
-		labels["ssh_port"] = strconv.Itoa(port)
+	if endpoint.Port != 0 {
+		labels["ssh_port"] = strconv.Itoa(endpoint.Port)
+	}
+	if endpoint.User != "" {
+		labels["ssh_user"] = endpoint.User
+	}
+	if endpoint.Kind != "" {
+		labels["ssh_kind"] = endpoint.Kind
 	}
 	server := Server{
 		CloudID:  pod.ID,
@@ -436,16 +485,21 @@ func runpodServer(pod runpodPod, leaseID, slug string, cfg Config, keep bool) Se
 		Status:   labels["state"],
 		Labels:   labels,
 	}
-	server.PublicNet.IPv4.IP = host
+	if endpoint.Public {
+		server.PublicNet.IPv4.IP = endpoint.Host
+	}
 	server.ServerType.Name = cfg.Runpod.InstanceID
 	return server
 }
 
 func runpodSSHTarget(cfg Config, pod runpodPod) SSHTarget {
-	host, port := pod.SSHEndpoint()
-	target := sshTargetFromConfig(cfg, host)
-	if port != 0 {
-		target.Port = strconv.Itoa(port)
+	endpoint := pod.SSHEndpoint()
+	target := sshTargetFromConfig(cfg, endpoint.Host)
+	if endpoint.Port != 0 {
+		target.Port = strconv.Itoa(endpoint.Port)
+	}
+	if endpoint.User != "" {
+		target.User = endpoint.User
 	}
 	target.TargetOS = targetLinux
 	target.NetworkKind = networkPublic

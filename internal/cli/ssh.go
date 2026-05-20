@@ -296,6 +296,10 @@ func runSSHQuiet(ctx context.Context, target SSHTarget, remote string) error {
 	return runSSHQuietWithOptions(ctx, target, remote, "10", "3")
 }
 
+func RunSSHQuiet(ctx context.Context, target SSHTarget, remote string) error {
+	return runSSHQuiet(ctx, target, remote)
+}
+
 func runSSHQuietWithOptions(ctx context.Context, target SSHTarget, remote, connectTimeout, connectionAttempts string) error {
 	remote = wrapRemoteForTarget(target, remote)
 	var lastErr error

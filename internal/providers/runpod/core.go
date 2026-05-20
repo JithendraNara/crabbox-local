@@ -98,6 +98,10 @@ func waitForSSHReady(ctx context.Context, target *SSHTarget, stderr io.Writer, p
 	return core.WaitForSSHReady(ctx, target, stderr, phase, timeout)
 }
 
+func runSSHQuiet(ctx context.Context, target SSHTarget, remote string) error {
+	return core.RunSSHQuiet(ctx, target, remote)
+}
+
 func bootstrapWaitTimeout(cfg Config) time.Duration {
 	return core.BootstrapWaitTimeout(cfg)
 }

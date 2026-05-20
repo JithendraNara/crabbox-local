@@ -29,7 +29,7 @@ static SSH provider for existing machines.
 | [Tensorlake](tensorlake.md) | delegated run | Linux | Tensorlake Firecracker sandbox execution via the `tensorlake` CLI |
 | [Cloudflare](cloudflare.md) | delegated run | Linux | Cloudflare execution through a Worker and container runner |
 | [Railway](railway.md) | delegated run | Linux | redeploy and stream logs for an existing Railway service via the GraphQL API |
-| [RunPod](runpod.md) | SSH lease | Linux | disposable RunPod CPU pods provisioned via the GraphQL API and accessed over public SSH |
+| [RunPod](runpod.md) | SSH lease | Linux | disposable RunPod pods provisioned via the REST API and accessed over public SSH |
 
 ## Shared Rules
 
@@ -77,9 +77,9 @@ Proxmox and delegated providers do not use the Crabbox coordinator:
   `deploymentLogs`, `deploymentStop`) against a pre-existing service the user
   owns. The user's command argument is logged; Railway runs the service's own
   start command — there is no synchronous exec endpoint.
-- RunPod uses the [RunPod](https://runpod.io) GraphQL API (`deployCpuPod`,
-  `pod`, `podTerminate`) to provision a CPU pod that exposes SSH on port 22.
-  Once `pod.runtime.ports` reports the public TCP mapping, Crabbox reuses its
+- RunPod uses the [RunPod](https://runpod.io) REST API (`/v1/pods`) to
+  provision a pod that exposes SSH on port 22. Once `publicIp` and
+  `portMappings["22"]` report the public TCP mapping, Crabbox reuses its
   normal SSH sync/run path against `root@<pod-ip>:<public-port>`.
 
 Namespace Devbox and Semaphore are SSH lease providers that do not use the

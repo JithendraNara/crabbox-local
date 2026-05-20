@@ -42,7 +42,7 @@ func TestRunpodIsRunpodProviderNameAcceptsAliases(t *testing.T) {
 
 func TestRunpodClientRequiresAPIKey(t *testing.T) {
 	cfg := Config{}
-	cfg.Runpod.APIURL = "https://api.runpod.io/graphql"
+	cfg.Runpod.APIURL = "https://rest.runpod.io/v1"
 	if _, err := newRunpodClient(cfg, Runtime{}); err == nil {
 		t.Fatal("newRunpodClient accepted empty API key")
 	}
@@ -51,7 +51,7 @@ func TestRunpodClientRequiresAPIKey(t *testing.T) {
 func TestRunpodClientRejectsBareHTTPURL(t *testing.T) {
 	cfg := Config{}
 	cfg.Runpod.APIKey = "test-key"
-	cfg.Runpod.APIURL = "http://api.runpod.io/graphql"
+	cfg.Runpod.APIURL = "http://rest.runpod.io/v1"
 	if _, err := newRunpodClient(cfg, Runtime{}); err == nil {
 		t.Fatal("newRunpodClient accepted plaintext http URL")
 	}
@@ -60,7 +60,7 @@ func TestRunpodClientRejectsBareHTTPURL(t *testing.T) {
 func TestRunpodClientAllowsLoopbackHTTPURL(t *testing.T) {
 	cfg := Config{}
 	cfg.Runpod.APIKey = "test-key"
-	cfg.Runpod.APIURL = "http://127.0.0.1:8080/graphql"
+	cfg.Runpod.APIURL = "http://127.0.0.1:8080/v1"
 	if _, err := newRunpodClient(cfg, Runtime{}); err != nil {
 		t.Fatalf("loopback http rejected: %v", err)
 	}
@@ -119,17 +119,20 @@ func TestRunpodConfigureRejectsUnsupportedTargetAndTailscale(t *testing.T) {
 	}
 }
 
-func TestRunpodDefaultsPickCheapCPUFlavorAndPreserveCustomWorkRoot(t *testing.T) {
+func TestRunpodDefaultsPickPublicSSHGPUAndPreserveCustomWorkRoot(t *testing.T) {
 	cfg := Config{}
 	applyRunpodDefaults(&cfg)
-	if cfg.Runpod.InstanceID != "cpu3c-2-4" {
-		t.Fatalf("default instanceId = %q, want cpu3c-2-4 (cheapest documented CPU flavor)", cfg.Runpod.InstanceID)
+	if cfg.Runpod.APIURL != "https://rest.runpod.io/v1" {
+		t.Fatalf("default apiUrl = %q, want REST API", cfg.Runpod.APIURL)
 	}
-	if cfg.Runpod.CloudType != "ALL" {
-		t.Fatalf("default cloudType = %q, want ALL", cfg.Runpod.CloudType)
+	if cfg.Runpod.InstanceID != "NVIDIA L4,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A4500" {
+		t.Fatalf("default instanceId = %q, want GPU priority list", cfg.Runpod.InstanceID)
 	}
-	if cfg.Runpod.DiskGB != 10 {
-		t.Fatalf("default diskGB = %d, want 10", cfg.Runpod.DiskGB)
+	if cfg.Runpod.CloudType != "SECURE" {
+		t.Fatalf("default cloudType = %q, want SECURE", cfg.Runpod.CloudType)
+	}
+	if cfg.Runpod.DiskGB != 20 {
+		t.Fatalf("default diskGB = %d, want 20", cfg.Runpod.DiskGB)
 	}
 
 	cfg = Config{WorkRoot: "/custom/crabbox"}
@@ -151,23 +154,48 @@ func TestRunpodSSHEndpointPicksPublicPort22(t *testing.T) {
 		{IP: "203.0.113.5", PrivatePort: 22, PublicPort: 32100, IsIPPublic: true, Type: "tcp"},
 		{IP: "203.0.113.5", PrivatePort: 22, PublicPort: 32101, IsIPPublic: true, Type: "tcp"},
 	}}}
-	host, port := pod.SSHEndpoint()
-	if host != "203.0.113.5" || port != 32100 {
-		t.Fatalf("host=%q port=%d, want 203.0.113.5:32100", host, port)
+	endpoint := pod.SSHEndpoint()
+	if endpoint.Host != "203.0.113.5" || endpoint.Port != 32100 || endpoint.Kind != "public-tcp" || !endpoint.Public {
+		t.Fatalf("endpoint=%#v, want public 203.0.113.5:32100", endpoint)
 	}
 
 	pod = runpodPod{Runtime: &runpodRuntime{Ports: []runpodRuntimePort{
 		{IP: "10.0.0.1", PrivatePort: 22, PublicPort: 32100, IsIPPublic: false, Type: "tcp"},
-	}}}
-	host, port = pod.SSHEndpoint()
-	if host != "" || port != 0 {
-		t.Fatalf("expected no public ssh endpoint, got %q:%d", host, port)
+	}}, Machine: runpodMachine{PodHostID: "pod-host-id"}}
+	endpoint = pod.SSHEndpoint()
+	if endpoint.Host != "" || endpoint.Port != 0 {
+		t.Fatalf("private mapping should not yield SSH endpoint, got %#v", endpoint)
 	}
 
 	pod = runpodPod{Runtime: nil}
-	host, port = pod.SSHEndpoint()
-	if host != "" || port != 0 {
-		t.Fatalf("nil runtime should yield empty endpoint, got %q:%d", host, port)
+	endpoint = pod.SSHEndpoint()
+	if endpoint.Host != "" || endpoint.Port != 0 {
+		t.Fatalf("nil runtime without host id should yield empty endpoint, got %#v", endpoint)
+	}
+}
+
+func TestRunpodDeployPayloadUsesGPUAvailabilityPriority(t *testing.T) {
+	payload := runpodDeployPayload(runpodDeployInput{
+		Name:              "crabbox-blue-12345678",
+		ImageName:         "runpod/pytorch:custom",
+		InstanceID:        "NVIDIA L4, NVIDIA RTX A4000",
+		CloudType:         "SECURE",
+		ContainerDiskInGb: 20,
+		Ports:             "22/tcp",
+	})
+	if payload["computeType"] != "GPU" || payload["gpuTypePriority"] != "availability" {
+		t.Fatalf("payload=%#v", payload)
+	}
+	gpuIDs, ok := payload["gpuTypeIds"].([]string)
+	if !ok || len(gpuIDs) != 2 || gpuIDs[0] != "NVIDIA L4" || gpuIDs[1] != "NVIDIA RTX A4000" {
+		t.Fatalf("gpuTypeIds=%#v", payload["gpuTypeIds"])
+	}
+	ports, ok := payload["ports"].([]string)
+	if !ok || len(ports) != 1 || ports[0] != "22/tcp" {
+		t.Fatalf("ports=%#v", payload["ports"])
+	}
+	if payload["supportPublicIp"] != true {
+		t.Fatalf("supportPublicIp=%#v", payload["supportPublicIp"])
 	}
 }
 
@@ -205,25 +233,16 @@ func TestRunpodLeaseIdentityHandlesNamedAndManualPods(t *testing.T) {
 }
 
 func TestRunpodDoctorChecksAuthAndListPods(t *testing.T) {
-	var queries []string
+	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("auth = %q, want Bearer test-key", r.Header.Get("Authorization"))
 		}
-		if r.Header.Get("Content-Type") != "application/json" {
+		if r.Header.Get("Content-Type") != "" {
 			t.Errorf("content-type = %q", r.Header.Get("Content-Type"))
 		}
-		body, _ := io.ReadAll(r.Body)
-		var payload struct {
-			Query string `json:"query"`
-		}
-		_ = json.Unmarshal(body, &payload)
-		queries = append(queries, payload.Query)
-		if strings.Contains(payload.Query, "myself") && !strings.Contains(payload.Query, "pods") {
-			_, _ = io.WriteString(w, `{"data":{"myself":{"id":"user_x","email":"a@b","clientBalance":0,"signedTermsOfService":true}}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"data":{"myself":{"pods":[]}}}`)
+		paths = append(paths, r.URL.Path)
+		_, _ = io.WriteString(w, `[]`)
 	}))
 	defer server.Close()
 
@@ -241,11 +260,8 @@ func TestRunpodDoctorChecksAuthAndListPods(t *testing.T) {
 	if result.Provider != providerName {
 		t.Fatalf("provider=%q", result.Provider)
 	}
-	if len(queries) != 2 {
-		t.Fatalf("queries=%v, want 2 (whoami + list)", queries)
-	}
-	if !strings.Contains(queries[0], "myself") {
-		t.Fatalf("first query = %q, want whoami", queries[0])
+	if len(paths) != 2 || paths[0] != "/pods" || paths[1] != "/pods" {
+		t.Fatalf("paths=%v, want two /pods reads", paths)
 	}
 }
 
@@ -277,7 +293,7 @@ func (f *fakeRunpodAPI) Whoami(_ context.Context) (runpodMyself, error) {
 	f.whoamiCalls++
 	return runpodMyself{ID: "user_x", Email: "a@b"}, nil
 }
-func (f *fakeRunpodAPI) DeployCpuPod(_ context.Context, input runpodDeployInput) (runpodPod, error) {
+func (f *fakeRunpodAPI) DeployPod(_ context.Context, input runpodDeployInput) (runpodPod, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deployCalls = append(f.deployCalls, input)
@@ -346,9 +362,26 @@ func TestRunpodWaitForPodSSHReturnsWhenPublicPortReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, port := pod.SSHEndpoint()
-	if host != "203.0.113.9" || port != 41200 {
-		t.Fatalf("host=%q port=%d", host, port)
+	endpoint := pod.SSHEndpoint()
+	if endpoint.Host != "203.0.113.9" || endpoint.Port != 41200 {
+		t.Fatalf("endpoint=%#v", endpoint)
+	}
+}
+
+func TestRunpodWaitForSSHRejectsProxyOnlyPods(t *testing.T) {
+	fake := &fakeRunpodAPI{getPod: func(id string) (runpodPod, error) {
+		return runpodPod{ID: id, Name: "crabbox-blue-12345678", DesiredStatus: "RUNNING", Machine: runpodMachine{PodHostID: "pod_abc-1234"}}, nil
+	}}
+	backend := &runpodLeaseBackend{
+		cfg:                 Config{Runpod: RunpodConfig{APIKey: "k"}},
+		rt:                  Runtime{Stdout: io.Discard, Stderr: io.Discard},
+		client:              fake,
+		pollInitialOverride: 10 * time.Millisecond,
+		pollTimeoutOverride: 2 * time.Second,
+	}
+	_, err := backend.waitForPodSSH(context.Background(), fake, "pod_a")
+	if err == nil || !strings.Contains(err.Error(), "ssh endpoint not exposed") {
+		t.Fatalf("err=%v, want timeout without public TCP endpoint", err)
 	}
 }
 
@@ -364,17 +397,19 @@ func TestRunpodReleaseLeaseTerminatesPod(t *testing.T) {
 	}
 }
 
-func TestRunpodClientSendsBearerAndGraphQLBody(t *testing.T) {
+func TestRunpodClientSendsBearerAndRESTRequest(t *testing.T) {
 	var (
 		gotAuth        string
 		gotContentType string
 		gotMethod      string
+		gotPath        string
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotContentType = r.Header.Get("Content-Type")
 		gotMethod = r.Method
-		_, _ = io.WriteString(w, `{"data":{"myself":{"id":"user_x","email":"a@b","clientBalance":0,"signedTermsOfService":true}}}`)
+		gotPath = r.URL.Path
+		_, _ = io.WriteString(w, `[]`)
 	}))
 	defer server.Close()
 	cfg := Config{}
@@ -387,13 +422,68 @@ func TestRunpodClientSendsBearerAndGraphQLBody(t *testing.T) {
 	if _, err := client.Whoami(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if gotMethod != http.MethodPost {
+	if gotMethod != http.MethodGet {
 		t.Fatalf("method=%q", gotMethod)
+	}
+	if gotPath != "/pods" {
+		t.Fatalf("path=%q", gotPath)
 	}
 	if gotAuth != "Bearer test-key" {
 		t.Fatalf("auth=%q", gotAuth)
 	}
-	if gotContentType != "application/json" {
+	if gotContentType != "" {
 		t.Fatalf("content-type=%q", gotContentType)
+	}
+}
+
+func TestRunpodClientRetriesGPUCapacityFallbacks(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/pods" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var payload struct {
+			GPUTypeIDs []string `json:"gpuTypeIds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.GPUTypeIDs) != 1 {
+			t.Fatalf("gpuTypeIds=%#v, want one id per fallback attempt", payload.GPUTypeIDs)
+		}
+		seen = append(seen, payload.GPUTypeIDs[0])
+		if payload.GPUTypeIDs[0] == "NVIDIA L4" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"create pod: There are no instances currently available","status":500}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"pod_ok","name":"crabbox-blue-12345678","status":"RUNNING"}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{}
+	cfg.Runpod.APIKey = "test-key"
+	cfg.Runpod.APIURL = server.URL
+	client, err := newRunpodClient(cfg, Runtime{HTTP: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := client.DeployPod(context.Background(), runpodDeployInput{
+		Name:              "crabbox-blue-12345678",
+		ImageName:         "runpod/pytorch:custom",
+		InstanceID:        "NVIDIA L4,NVIDIA RTX 4000 Ada Generation",
+		CloudType:         "SECURE",
+		ContainerDiskInGb: 20,
+		Ports:             "22/tcp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.ID != "pod_ok" {
+		t.Fatalf("pod=%#v", pod)
+	}
+	if len(seen) != 2 || seen[0] != "NVIDIA L4" || seen[1] != "NVIDIA RTX 4000 Ada Generation" {
+		t.Fatalf("seen=%v", seen)
 	}
 }

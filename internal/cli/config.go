@@ -565,11 +565,11 @@ func baseConfig() Config {
 			APIURL: "https://backboard.railway.com/graphql/v2",
 		},
 		Runpod: RunpodConfig{
-			APIURL:     "https://api.runpod.io/graphql",
-			CloudType:  "ALL",
-			InstanceID: "cpu3c-2-4",
-			Image:      "runpod/base:0.6.2",
-			DiskGB:     10,
+			APIURL:     "https://rest.runpod.io/v1",
+			CloudType:  "SECURE",
+			InstanceID: "NVIDIA L4,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A4500",
+			Image:      "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04",
+			DiskGB:     20,
 		},
 		Islo: IsloConfig{
 			BaseURL:  "https://api.islo.dev",

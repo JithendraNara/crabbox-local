@@ -3,21 +3,20 @@
 Read when:
 
 - choosing `provider: runpod`;
-- pointing Crabbox at a RunPod CPU (or GPU) pod;
+- pointing Crabbox at a RunPod pod;
 - changing `internal/providers/runpod`.
 
 [RunPod](https://runpod.io) is a GPU/CPU cloud whose primitives are pods, GPU
-types, CPU flavors, templates, and machines. RunPod's public API is GraphQL at
-`https://api.runpod.io/graphql` and is authenticated with
-`Authorization: Bearer $RUNPOD_API_KEY`. The same key is accepted as a query
-parameter (`?api_key=...`), but Crabbox only sends the header form.
+types, CPU flavors, templates, and machines. Crabbox uses the RunPod REST API
+at `https://rest.runpod.io/v1` with `Authorization: Bearer $RUNPOD_API_KEY`.
 
 ## SSH Lease Shape
 
-A RunPod pod has a static public IP and a NAT-mapped public port for each
-exposed private port. When the pod is created with `startSsh: true` and
-`ports: "22/tcp"`, RunPod reports the mapping via the pod's
-`runtime.ports[]` connection once the pod reaches `RUNNING`:
+A RunPod pod can expose a public IP and a NAT-mapped public port for each
+exposed private port. Crabbox creates pods with `ports: ["22/tcp"]` and
+`supportPublicIp: true`. RunPod reports the mapping as `publicIp` plus
+`portMappings["22"]`; older responses may also expose the same data through
+`runtime.ports[]`:
 
 ```json
 {
@@ -29,11 +28,12 @@ exposed private port. When the pod is created with `startSsh: true` and
 }
 ```
 
-Crabbox provisions the pod through `deployCpuPod`, polls `pod(input: {podId})`
-until `runtime.ports` exposes a public port-22 mapping, and then hands the
-caller a normal `SSHTarget` pointed at `root@<ip>:<publicPort>`. From that
-point on, Crabbox uses its existing SSH sync, run, status, ssh, and stop paths
-— there is no parallel RunPod-specific exec surface.
+Crabbox provisions the pod through `POST /v1/pods`, polls `GET /v1/pods/{id}`
+until public TCP port 22 is available, and then hands the caller a normal
+`SSHTarget` pointed at `root@<ip>:<publicPort>`. From that point on, Crabbox
+uses its existing SSH sync, run, status, ssh, and stop paths — there is no
+parallel RunPod-specific exec surface. RunPod's basic SSH proxy is not used
+because it does not support the SCP/SFTP behavior rsync needs.
 
 Public-key SSH authentication is the only supported RunPod auth method. Upload
 your ED25519 public key under the RunPod settings page once; RunPod injects it
@@ -41,25 +41,26 @@ into every pod you launch. Crabbox does not manage the public key.
 
 ## Pod Lifecycle
 
-`Acquire` deploys a CPU pod whose name follows the standard Crabbox
+`Acquire` deploys a pod whose name follows the standard Crabbox
 `crabbox-<slug>-<leaseSuffix>` pattern, then waits for `runtime.ports` to
 expose a public TCP mapping for port 22. `Resolve` looks up an existing pod by
 lease id, pod id, or pod name. `List` enumerates the caller's pods via
-`myself { pods { … } }` and filters to the `crabbox-` prefix unless `--all` is
-set. `ReleaseLease` calls `podTerminate(input: {podId})`. `Doctor` runs
-`myself` (auth check) and `myself.pods` (inventory check) without ever calling
-a mutation — it is safe to run on every CI.
+`GET /v1/pods` and filters to the `crabbox-` prefix unless `--all` is set.
+`ReleaseLease` calls `DELETE /v1/pods/{id}`. `Doctor` runs read-only pod list
+checks without ever creating a pod — it is safe to run on every CI.
 
 ## Defaults And Cost Discipline
 
-The defaults pick the cheapest documented CPU flavor (`cpu3c-2-4`,
-compute-optimized, 2 vCPU / 4 GB RAM) on the `runpod/base:0.6.2` image with a
-10 GB container disk and `cloudType: ALL`. Override any of these via flags,
-env vars, or YAML before pointing the provider at a GPU SKU — GPU pods cost
-substantially more per hour. Pods are terminated immediately on
-`ReleaseLease`; if `--keep` is set, the pod stays up and accrues cost until
-the caller terminates it. Run `crabbox list --provider runpod` to spot leaked
-pods.
+The defaults pick secure-cloud GPU pods on the RunPod PyTorch image with a 20
+GB container disk because that path exposes the public TCP SSH mapping Crabbox
+needs for rsync. `instanceId` may be a comma-separated GPU priority list; the
+default starts with `NVIDIA L4,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000`
+and continues through common 24 GB fallback GPUs. Override any of these via
+flags, env vars, or YAML if you need a different GPU type or a CPU flavor;
+verify that the selected shape exposes public TCP SSH before relying on it.
+Pods are terminated immediately on `ReleaseLease`; if `--keep` is set, the pod
+stays up and accrues cost until the caller terminates it. Run
+`crabbox list --provider runpod` to spot leaked pods.
 
 ## Commands
 
@@ -83,17 +84,15 @@ matching the precedence other direct providers use. The key is read from the
 environment only; the provider does not register a CLI flag for it. Do not
 pass the key on the command line.
 
-The canonical RunPod request shape is:
+The canonical RunPod auth check is:
 
 ```sh
-curl -X POST https://api.runpod.io/graphql \
-  -H "Authorization: Bearer $RUNPOD_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"query { myself { id email } }"}'
+curl https://rest.runpod.io/v1/pods \
+  -H "Authorization: Bearer $RUNPOD_API_KEY"
 ```
 
-Crabbox sends the same `Authorization: Bearer $RUNPOD_API_KEY` header and a
-JSON `{query, variables}` body to the same endpoint.
+Crabbox sends the same `Authorization: Bearer $RUNPOD_API_KEY` header to REST
+pod endpoints.
 
 ## Config
 
@@ -101,12 +100,12 @@ JSON `{query, variables}` body to the same endpoint.
 provider: runpod
 target: linux
 runpod:
-  apiUrl: https://api.runpod.io/graphql
-  cloudType: ALL          # ALL | SECURE | COMMUNITY
-  instanceId: cpu3c-2-4   # cheapest documented CPU flavor
-  image: runpod/base:0.6.2
+  apiUrl: https://rest.runpod.io/v1
+  cloudType: SECURE       # SECURE | COMMUNITY
+  instanceId: NVIDIA L4,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A4500
+  image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
   templateId: ""          # optional
-  diskGB: 10
+  diskGB: 20
   user: root
   workRoot: /tmp/crabbox
 ```
@@ -149,15 +148,15 @@ CRABBOX_RUNPOD_WORK_ROOT
 
 ## Gotchas
 
-- A funded RunPod account is required. `deployCpuPod` returns
-  `Your account balance is too low to rent a pod. Please add funds to your account.`
-  when `clientBalance == 0`. `crabbox doctor --provider runpod` succeeds on a
-  zero-balance account because it only reads `myself` and the pod list — the
+- A funded RunPod account is required. `crabbox doctor --provider runpod`
+  succeeds on a zero-balance account because it only reads the pod list — the
   balance shortfall only surfaces when an `Acquire` runs.
 - You must upload your ED25519 public key to RunPod once before any pod
   bootstrap will accept your SSH session.
 - The pod's public port for SSH is allocated at runtime and changes between
   pods; never hard-code `--ssh-port`.
+- RunPod's basic SSH proxy is not a Crabbox transport because rsync needs
+  SCP/SFTP support.
 - `--class` and `--type` are rejected for this provider; use
   `--runpod-instance-id` and `--runpod-image` instead.
 - `--tailscale` is rejected; RunPod pods expose only public SSH.

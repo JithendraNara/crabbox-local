@@ -19,9 +19,9 @@ type runpodFlagValues struct {
 // CRABBOX_RUNPOD_API_KEY.
 func RegisterRunpodProviderFlags(fs *flag.FlagSet, defaults Config) any {
 	return runpodFlagValues{
-		APIURL:     fs.String("runpod-url", defaults.Runpod.APIURL, "RunPod GraphQL API URL"),
-		CloudType:  fs.String("runpod-cloud-type", defaults.Runpod.CloudType, "RunPod cloud type: ALL, SECURE, or COMMUNITY"),
-		InstanceID: fs.String("runpod-instance-id", defaults.Runpod.InstanceID, "RunPod CPU instance flavor ID, e.g. cpu3c-2-4"),
+		APIURL:     fs.String("runpod-url", defaults.Runpod.APIURL, "RunPod REST API URL"),
+		CloudType:  fs.String("runpod-cloud-type", defaults.Runpod.CloudType, "RunPod cloud type: SECURE or COMMUNITY"),
+		InstanceID: fs.String("runpod-instance-id", defaults.Runpod.InstanceID, "RunPod GPU type ID or CPU flavor ID"),
 		Image:      fs.String("runpod-image", defaults.Runpod.Image, "Docker image to deploy on the pod"),
 		TemplateID: fs.String("runpod-template-id", defaults.Runpod.TemplateID, "Optional RunPod template ID"),
 		DiskGB:     fs.Int("runpod-disk-gb", defaults.Runpod.DiskGB, "Container disk size in GB"),
