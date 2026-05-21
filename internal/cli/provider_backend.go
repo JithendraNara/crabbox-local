@@ -382,11 +382,11 @@ func normalizeProviderName(name string) string {
 }
 
 func providerHelpAll() string {
-	return "provider: hetzner, aws, azure, gcp, proxmox, parallels, ssh, exe-dev, blacksmith-testbox, namespace-devbox, semaphore, daytona, islo, e2b, modal, sprites, railway, runpod, or cloudflare"
+	return "provider: hetzner, aws, azure, gcp, proxmox, parallels, local-container, ssh, exe-dev, blacksmith-testbox, namespace-devbox, semaphore, daytona, islo, e2b, modal, sprites, railway, runpod, or cloudflare"
 }
 
 func providerHelpSSH() string {
-	return "provider: hetzner, aws, azure, gcp, proxmox, parallels, ssh, exe-dev, namespace-devbox, semaphore, daytona, or sprites"
+	return "provider: hetzner, aws, azure, gcp, proxmox, parallels, local-container, ssh, exe-dev, namespace-devbox, semaphore, daytona, runpod, or sprites"
 }
 
 func isBlacksmithProvider(provider string) bool {
@@ -484,6 +484,9 @@ func leaseOptionsFromConfig(cfg Config) LeaseOptions {
 func validateActionsRunnerCapability(backend Backend, cfg Config) error {
 	if _, ok := backend.(SSHLeaseBackend); !ok {
 		return exit(2, "--actions-runner requires an SSH lease provider")
+	}
+	if backend.Spec().Name == "local-container" {
+		return exit(2, "--actions-runner is not supported for provider=local-container; use normal crabbox run or a remote SSH provider")
 	}
 	if !supportsActionsRunnerTarget(SSHTarget{TargetOS: cfg.TargetOS, WindowsMode: cfg.WindowsMode}) {
 		return exit(2, "--actions-runner requires target=linux or target=windows with windows-mode=wsl2")
