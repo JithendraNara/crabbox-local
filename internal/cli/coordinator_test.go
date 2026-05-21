@@ -1179,6 +1179,20 @@ func TestCoordinatorImageCreateAndPromote(t *testing.T) {
 				t.Fatalf("promote fsrAz=%#v", got)
 			}
 			_, _ = w.Write([]byte(`{"image":{"id":"ami-12345678","name":"openclaw-crabbox-test","state":"available","region":"eu-west-1","promotedAt":"2026-05-01T12:46:00Z"}}`))
+		case "/v1/images/ami-12345678/fast-snapshot-restore":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if got := r.URL.Query().Get("provider"); got != "aws" {
+				t.Fatalf("fsr provider=%q", got)
+			}
+			if got := r.URL.Query().Get("region"); got != "us-east-1" {
+				t.Fatalf("fsr region=%q", got)
+			}
+			if got := r.URL.Query()["fsrAz"]; !reflect.DeepEqual(got, []string{"us-east-1a"}) {
+				t.Fatalf("fsr fsrAz=%#v", got)
+			}
+			_, _ = w.Write([]byte(`{"image":{"id":"ami-12345678","name":"openclaw-crabbox-test","state":"available","region":"us-east-1","fastSnapshotRestores":[{"snapshotID":"snap-root","availabilityZone":"us-east-1a","state":"enabled"}]}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -1198,6 +1212,9 @@ func TestCoordinatorImageCreateAndPromote(t *testing.T) {
 	}
 	if promoted, err := client.PromoteImage(context.Background(), "ami-12345678", CoordinatorImageRef{Provider: "aws", Region: "us-east-1", Target: "macos", ServerType: "mac1.metal", Architecture: "x86_64_mac", FastSnapshotRestore: true, FastSnapshotRestoreAZs: []string{"us-east-1a", "us-east-1b"}}); err != nil || promoted.PromotedAt == "" {
 		t.Fatalf("promoted=%#v err=%v", promoted, err)
+	}
+	if status, err := client.FastSnapshotRestoreStatus(context.Background(), "ami-12345678", CoordinatorImageRef{Provider: "aws", Region: "us-east-1", FastSnapshotRestoreAZs: []string{"us-east-1a"}}); err != nil || len(status.FastSnapshotRestores) != 1 || status.FastSnapshotRestores[0].State != "enabled" {
+		t.Fatalf("fsr status=%#v err=%v", status, err)
 	}
 	if err := client.DeleteImage(context.Background(), "ami-12345678", CoordinatorImageRef{Provider: "aws", Region: "eu-west-1", Kind: "aws-ami"}); err != nil {
 		t.Fatalf("delete image: %v", err)

@@ -1369,6 +1369,69 @@ describe("aws provider", () => {
       "DeleteSnapshot",
     ]);
   });
+
+  it("describes Fast Snapshot Restore status for selected snapshots and zones", async () => {
+    const actions: string[] = [];
+    const queries: URLSearchParams[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const body = await request.clone().text();
+        const params = new URLSearchParams(body);
+        const action = params.get("Action") ?? "";
+        actions.push(action);
+        queries.push(params);
+        if (action === "DescribeFastSnapshotRestores") {
+          return ec2XMLResponse(`<?xml version="1.0" encoding="UTF-8"?>
+<DescribeFastSnapshotRestoresResponse>
+  <fastSnapshotRestoreSet>
+    <item>
+      <snapshotId>snap-root</snapshotId>
+      <availabilityZone>us-west-2a</availabilityZone>
+      <state>enabled</state>
+    </item>
+    <item>
+      <snapshotId>snap-tools</snapshotId>
+      <availabilityZone>us-west-2a</availabilityZone>
+      <state>enabling</state>
+      <stateTransitionReason>Client.UserInitiated</stateTransitionReason>
+    </item>
+  </fastSnapshotRestoreSet>
+</DescribeFastSnapshotRestoresResponse>`);
+        }
+        return ec2XMLResponse(
+          `<Response><Errors><Error><Code>Unexpected</Code><Message>${action}</Message></Error></Errors></Response>`,
+          500,
+        );
+      }),
+    );
+
+    const client = new EC2SpotClient(
+      { AWS_ACCESS_KEY_ID: "test", AWS_SECRET_ACCESS_KEY: "secret" } as never,
+      "us-west-2",
+    );
+    const statuses = await client.fastSnapshotRestoreStatus(
+      ["snap-root", "snap-tools", "snap-root"],
+      ["us-west-2a", "us-west-2a"],
+    );
+
+    expect(actions).toEqual(["DescribeFastSnapshotRestores"]);
+    expect(queries[0].get("Filter.1.Name")).toBe("snapshot-id");
+    expect(queries[0].get("Filter.1.Value.1")).toBe("snap-root");
+    expect(queries[0].get("Filter.1.Value.2")).toBe("snap-tools");
+    expect(queries[0].get("Filter.2.Name")).toBe("availability-zone");
+    expect(queries[0].get("Filter.2.Value.1")).toBe("us-west-2a");
+    expect(statuses).toEqual([
+      { snapshotID: "snap-root", availabilityZone: "us-west-2a", state: "enabled" },
+      {
+        snapshotID: "snap-tools",
+        availabilityZone: "us-west-2a",
+        state: "enabling",
+        stateTransitionReason: "Client.UserInitiated",
+      },
+    ]);
+  });
 });
 
 function ec2ConfiguredSecurityGroupResponse(

@@ -610,6 +610,44 @@ export class EC2SpotClient {
         );
   }
 
+  async fastSnapshotRestoreStatus(
+    snapshotIDs: string[],
+    availabilityZones: string[] = [],
+  ): Promise<ProviderFastSnapshotRestore[]> {
+    const snapshots = uniqueStrings(snapshotIDs);
+    const zones = uniqueStrings(availabilityZones);
+    if (snapshots.length === 0) {
+      return [];
+    }
+    const params: Record<string, string> = {
+      "Filter.1.Name": "snapshot-id",
+    };
+    snapshots.forEach((snapshotID, index) => {
+      params[`Filter.1.Value.${index + 1}`] = snapshotID;
+    });
+    if (zones.length > 0) {
+      params["Filter.2.Name"] = "availability-zone";
+      zones.forEach((zone, index) => {
+        params[`Filter.2.Value.${index + 1}`] = zone;
+      });
+    }
+    const statuses: ProviderFastSnapshotRestore[] = [];
+    let nextToken = "";
+    for (let page = 0; page < 100; page++) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- EC2 pagination depends on the previous token.
+      const root = await this.ec2("DescribeFastSnapshotRestores", {
+        ...params,
+        ...(nextToken ? { NextToken: nextToken } : {}),
+      });
+      statuses.push(...fastSnapshotRestoreItems(root, "fastSnapshotRestoreSet"));
+      nextToken = asString(root["nextToken"]);
+      if (!nextToken) {
+        return statuses;
+      }
+    }
+    throw new Error("aws fast snapshot restore status pagination exceeded 100 pages");
+  }
+
   async listMacHosts(serverType = "", state = ""): Promise<AWSMacHost[]> {
     const params: Record<string, string> = {};
     let filter = 1;

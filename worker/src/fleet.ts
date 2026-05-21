@@ -3696,7 +3696,10 @@ export class FleetDurableObject implements DurableObject {
     const project = url.searchParams.get("project") ?? undefined;
     const kind = url.searchParams.get("kind") ?? undefined;
     const known = provider === "aws" ? await this.createdAWSImage(decodedImageID) : undefined;
-    const knownRegion = known?.region ?? "";
+    const promotedAWSImage =
+      provider === "aws" ? await this.promotedAWSImageByID(decodedImageID) : undefined;
+    const awsMetadata = known ?? promotedAWSImage;
+    const knownRegion = awsMetadata?.region ?? "";
     const providerRegion = region || knownRegion;
     if (method === "GET" && action === undefined) {
       let image: ProviderImage;
@@ -3714,12 +3717,55 @@ export class FleetDurableObject implements DurableObject {
         }
         throw error;
       }
-      return json({ image: provider === "aws" ? mergeAWSImageMetadata(image, known) : image });
+      return json({
+        image: provider === "aws" ? mergeAWSImageMetadata(image, awsMetadata) : image,
+      });
+    }
+    if (method === "GET" && (action === "fast-snapshot-restore" || action === "fsr-status")) {
+      if (provider !== "aws") {
+        return json(
+          { error: "unsupported_provider", message: "Fast Snapshot Restore is AWS-only" },
+          { status: 400 },
+        );
+      }
+      const rawRegion = region ?? knownRegion;
+      const imageRegion = rawRegion ? sanitizeAWSRegion(rawRegion) : "";
+      if (rawRegion && !imageRegion) {
+        return json(
+          { error: "invalid_region", message: "region must be an AWS region name" },
+          { status: 400 },
+        );
+      }
+      const image = mergeAWSImageMetadata(
+        await this.provider("aws", imageRegion).getImage(decodedImageID),
+        awsMetadata,
+      );
+      const snapshots = image.snapshots ?? [];
+      if (snapshots.length === 0) {
+        return json(
+          {
+            error: "image_snapshots_missing",
+            message: `image ${decodedImageID} has no EBS snapshots to describe for Fast Snapshot Restore`,
+          },
+          { status: 409 },
+        );
+      }
+      const availabilityZones = fastSnapshotRestoreStatusAZs(url, image.region ?? imageRegion);
+      const fastSnapshotRestores = await this.provider(
+        "aws",
+        image.region ?? imageRegion,
+      ).fastSnapshotRestoreStatus?.(snapshots, availabilityZones);
+      const imageWithStatus = {
+        ...image,
+        fastSnapshotRestores: fastSnapshotRestores ?? [],
+      };
+      return json({
+        image: imageWithStatus,
+        fastSnapshotRestores: imageWithStatus.fastSnapshotRestores,
+      });
     }
     if (method === "DELETE" && action === undefined) {
-      const promoted =
-        provider === "aws" ? await this.promotedAWSImageByID(decodedImageID) : undefined;
-      if (promoted?.id === decodedImageID) {
+      if (promotedAWSImage?.id === decodedImageID) {
         return json(
           {
             error: "image_promoted",
@@ -4626,6 +4672,16 @@ function fastSnapshotRestoreAZs(
     ...splitCommaList(url.searchParams.get("fsrAzs") ?? ""),
     ...splitCommaList(env.CRABBOX_AWS_FAST_SNAPSHOT_RESTORE_AZS ?? ""),
     ...splitCommaList(env.CRABBOX_CAPACITY_AVAILABILITY_ZONES ?? ""),
+  ];
+  return [...new Set(zones.map((zone) => zone.trim()).filter((zone) => validAWSAZ(zone, region)))];
+}
+
+function fastSnapshotRestoreStatusAZs(url: URL, region: string): string[] {
+  const zones = [
+    ...url.searchParams.getAll("fsrAz"),
+    ...url.searchParams.getAll("az"),
+    ...splitCommaList(url.searchParams.get("fsrAzs") ?? ""),
+    ...splitCommaList(url.searchParams.get("azs") ?? ""),
   ];
   return [...new Set(zones.map((zone) => zone.trim()).filter((zone) => validAWSAZ(zone, region)))];
 }
@@ -6200,6 +6256,10 @@ interface CloudProvider {
     snapshotIDs: string[],
     availabilityZones: string[],
   ): Promise<ProviderFastSnapshotRestore[]>;
+  fastSnapshotRestoreStatus?(
+    snapshotIDs: string[],
+    availabilityZones?: string[],
+  ): Promise<ProviderFastSnapshotRestore[]>;
   deleteSSHKey(name: string): Promise<void>;
   hourlyPriceUSD(
     serverType: string,
@@ -6508,6 +6568,13 @@ class AWSProvider implements CloudProvider {
     availabilityZones: string[],
   ): Promise<ProviderFastSnapshotRestore[]> {
     return this.client.enableFastSnapshotRestore(snapshotIDs, availabilityZones);
+  }
+
+  fastSnapshotRestoreStatus(
+    snapshotIDs: string[],
+    availabilityZones?: string[],
+  ): Promise<ProviderFastSnapshotRestore[]> {
+    return this.client.fastSnapshotRestoreStatus(snapshotIDs, availabilityZones);
   }
 
   deleteImage(imageID: string): Promise<void> {

@@ -19,6 +19,8 @@ import type {
   Env,
   ExternalRunnerRecord,
   LeaseRecord,
+  ProviderFastSnapshotRestore,
+  ProviderImage,
   ProviderMachine,
   ProvisioningAttempt,
   RunRecord,
@@ -4073,6 +4075,77 @@ describe("fleet lease identity and idle", () => {
     );
   });
 
+  it("returns current AWS Fast Snapshot Restore status for promoted images", async () => {
+    const storage = new MemoryStorage();
+    const statusCalls: Array<{ snapshots: string[]; zones: string[] | undefined }> = [];
+    storage.seed("image:aws:promoted:windows:x86_64:us-west-2", {
+      id: "ami-devtools",
+      name: "devtools-windows",
+      state: "available",
+      provider: "aws",
+      kind: "aws-ami",
+      region: "us-west-2",
+      target: "windows",
+      architecture: "x86_64",
+      snapshots: ["snap-root"],
+      promotedAt: "2026-05-21T00:00:00Z",
+    });
+    const fleet = testFleet(storage, {
+      aws: fakeProvider(undefined, {
+        onGetImage(imageID) {
+          return {
+            id: imageID,
+            name: "devtools-windows",
+            state: "available",
+            provider: "aws",
+            kind: "aws-ami",
+            region: "us-west-2",
+            resourceID: imageID,
+            architecture: "x86_64",
+            snapshots: ["snap-root", "snap-tools"],
+          };
+        },
+        onFastSnapshotRestoreStatus(snapshotIDs, availabilityZones) {
+          statusCalls.push({ snapshots: snapshotIDs, zones: availabilityZones });
+          return [
+            {
+              snapshotID: "snap-root",
+              availabilityZone: "us-west-2a",
+              state: "enabled",
+            },
+          ];
+        },
+      }),
+    });
+
+    const response = await fleet.fetch(
+      request(
+        "GET",
+        "/v1/images/ami-devtools/fast-snapshot-restore?region=us-west-2&fsrAz=us-west-2a",
+        {
+          headers: { "x-crabbox-admin": "true" },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(statusCalls).toEqual([
+      { snapshots: ["snap-root", "snap-tools"], zones: ["us-west-2a"] },
+    ]);
+    await expect(response.json()).resolves.toMatchObject({
+      image: {
+        id: "ami-devtools",
+        target: "windows",
+        fastSnapshotRestores: [
+          { snapshotID: "snap-root", availabilityZone: "us-west-2a", state: "enabled" },
+        ],
+      },
+      fastSnapshotRestores: [
+        { snapshotID: "snap-root", availabilityZone: "us-west-2a", state: "enabled" },
+      ],
+    });
+  });
+
   it("requires Fast Snapshot Restore availability zones when no defaults are configured", async () => {
     const fleet = testFleet(new MemoryStorage(), {
       aws: fakeProvider(),
@@ -5821,6 +5894,10 @@ function fakeProvider(
     onGetImage?: (imageID: string, kind?: string) => Promise<ProviderImage> | ProviderImage;
     onDeleteImage?: (imageID: string, kind?: string) => void;
     onEnableFastSnapshotRestore?: (snapshotIDs: string[], availabilityZones: string[]) => void;
+    onFastSnapshotRestoreStatus?: (
+      snapshotIDs: string[],
+      availabilityZones: string[] | undefined,
+    ) => ProviderFastSnapshotRestore[];
     onRefreshSSHIngress?: (config: LeaseConfig) => void;
   } = {},
   onDelete?: (id: string) => Promise<void>,
@@ -5963,6 +6040,12 @@ function fakeProvider(
           state: "enabling",
         })),
       );
+    },
+    async fastSnapshotRestoreStatus(snapshotIDs: string[], availabilityZones?: string[]) {
+      if (result.onFastSnapshotRestoreStatus) {
+        return result.onFastSnapshotRestoreStatus(snapshotIDs, availabilityZones);
+      }
+      return [];
     },
     async deleteSSHKey() {},
     async hourlyPriceUSD() {

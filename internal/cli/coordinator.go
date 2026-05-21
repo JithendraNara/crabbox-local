@@ -177,6 +177,7 @@ type CoordinatorImage struct {
 	Project              string                           `json:"project,omitempty"`
 	ResourceID           string                           `json:"resourceID,omitempty"`
 	SnapshotIDs          []string                         `json:"snapshotIds,omitempty"`
+	Snapshots            []string                         `json:"snapshots,omitempty"`
 	Direct               bool                             `json:"direct,omitempty"`
 	Target               string                           `json:"target,omitempty"`
 	WindowsMode          string                           `json:"windowsMode,omitempty"`
@@ -1203,6 +1204,18 @@ func (c *CoordinatorClient) PromoteImage(ctx context.Context, imageID string, re
 		Image CoordinatorImage `json:"image"`
 	}
 	err := c.do(ctx, http.MethodPost, imagePath(imageID, "promote", refs...), map[string]any{}, &res)
+	return res.Image, err
+}
+
+func (c *CoordinatorClient) FastSnapshotRestoreStatus(ctx context.Context, imageID string, refs ...CoordinatorImageRef) (CoordinatorImage, error) {
+	var res struct {
+		Image                CoordinatorImage                 `json:"image"`
+		FastSnapshotRestores []CoordinatorFastSnapshotRestore `json:"fastSnapshotRestores"`
+	}
+	err := c.do(ctx, http.MethodGet, imagePath(imageID, "fast-snapshot-restore", refs...), nil, &res)
+	if len(res.Image.FastSnapshotRestores) == 0 && len(res.FastSnapshotRestores) > 0 {
+		res.Image.FastSnapshotRestores = res.FastSnapshotRestores
+	}
 	return res.Image, err
 }
 

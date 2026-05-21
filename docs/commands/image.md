@@ -10,6 +10,7 @@ crabbox image create --id cbx_... --name crabbox-runner-20260501-1246 --wait
 crabbox image promote ami-...
 crabbox image promote ami-... --target macos --region us-east-1 --type mac1.metal
 crabbox image promote ami-... --json
+crabbox image fsr-status ami-... --region us-west-2 --fsr-az us-west-2a
 crabbox image delete ami-... --region eu-west-1
 crabbox image delete my-azure-image --provider azure --region westeurope
 crabbox image delete my-gcp-image --provider gcp --region europe-west1-b --project example-project
@@ -127,6 +128,19 @@ crabbox image promote \
 
 Fast Snapshot Restore is provider-billed per snapshot and availability zone.
 Use it for known hot zones, not every candidate bake.
+
+Check the live AWS Fast Snapshot Restore state after promotion:
+
+```sh
+crabbox image fsr-status \
+  --region us-west-2 \
+  --fsr-az us-west-2a \
+  ami-1234567890abcdef0
+```
+
+`fsr-status` describes the AMI backing snapshots in AWS and returns the current
+state for each matching snapshot/AZ pair. Omit `--fsr-az` to return all Fast
+Snapshot Restore records AWS reports for the image snapshots.
 
 Future brokered AWS leases use the promoted image when the request does not set
 an explicit `awsAMI` or `CRABBOX_AWS_AMI` override. Promotion stores coordinator

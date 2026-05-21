@@ -307,14 +307,18 @@ type cacheWarmKongCmd struct {
 }
 
 type imageKongCmd struct {
-	Create  imageCreateKongCmd  `cmd:"" passthrough:"" help:"Create a provider image from a brokered lease."`
-	Promote imagePromoteKongCmd `cmd:"" passthrough:"" help:"Promote an AMI for brokered AWS runners."`
-	Delete  imageDeleteKongCmd  `cmd:"" passthrough:"" help:"Delete a provider image."`
+	Create    imageCreateKongCmd    `cmd:"" passthrough:"" help:"Create a provider image from a brokered lease."`
+	Promote   imagePromoteKongCmd   `cmd:"" passthrough:"" help:"Promote an AMI for brokered AWS runners."`
+	FSRStatus imageFSRStatusKongCmd `cmd:"" name:"fsr-status" passthrough:"" help:"Show AWS Fast Snapshot Restore status for an image."`
+	Delete    imageDeleteKongCmd    `cmd:"" passthrough:"" help:"Delete a provider image."`
 }
 type imageCreateKongCmd struct {
 	Args []string `arg:"" optional:""`
 }
 type imagePromoteKongCmd struct {
+	Args []string `arg:"" optional:""`
+}
+type imageFSRStatusKongCmd struct {
 	Args []string `arg:"" optional:""`
 }
 type imageDeleteKongCmd struct {
@@ -558,6 +562,9 @@ func (c *imageCreateKongCmd) Run(ctx context.Context, app App) error {
 }
 func (c *imagePromoteKongCmd) Run(ctx context.Context, app App) error {
 	return app.imagePromote(ctx, c.Args)
+}
+func (c *imageFSRStatusKongCmd) Run(ctx context.Context, app App) error {
+	return app.imageFSRStatus(ctx, c.Args)
 }
 func (c *imageDeleteKongCmd) Run(ctx context.Context, app App) error {
 	return app.imageDelete(ctx, c.Args)

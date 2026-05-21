@@ -87,6 +87,49 @@ func (a App) imagePromote(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (a App) imageFSRStatus(ctx context.Context, args []string) error {
+	fs := newFlagSet("image fsr-status", a.Stderr)
+	provider := fs.String("provider", "aws", "image provider: aws")
+	region := fs.String("region", "", "AWS region containing the AMI or snapshot")
+	var fastSnapshotRestoreAZs stringListFlag
+	fs.Var(&fastSnapshotRestoreAZs, "fsr-az", "availability zone for Fast Snapshot Restore status; repeatable")
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return exit(2, "usage: crabbox image fsr-status <ami-id|snapshot-id> [--region <aws-region>] [--fsr-az <az>]")
+	}
+	normalizedProvider := normalizeProviderName(*provider)
+	if normalizedProvider != "aws" {
+		return exit(2, "unsupported image provider %q; Fast Snapshot Restore is AWS-only", *provider)
+	}
+	coord, err := configuredAdminCoordinator()
+	if err != nil {
+		return err
+	}
+	image, err := coord.FastSnapshotRestoreStatus(ctx, fs.Arg(0), CoordinatorImageRef{
+		Provider:               normalizedProvider,
+		Region:                 *region,
+		FastSnapshotRestoreAZs: fastSnapshotRestoreAZs,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return json.NewEncoder(a.Stdout).Encode(image)
+	}
+	fmt.Fprintf(a.Stdout, "image=%s state=%s region=%s fsr=%d\n", image.ID, blank(image.State, "-"), blank(image.Region, "-"), len(image.FastSnapshotRestores))
+	if len(image.FastSnapshotRestores) == 0 {
+		fmt.Fprintln(a.Stdout, "fsr none")
+		return nil
+	}
+	for _, status := range image.FastSnapshotRestores {
+		fmt.Fprintf(a.Stdout, "fsr snapshot=%s az=%s state=%s reason=%s\n", status.SnapshotID, status.AvailabilityZone, blank(status.State, "-"), blank(status.StateTransitionReason, "-"))
+	}
+	return nil
+}
+
 func (a App) imageDelete(ctx context.Context, args []string) error {
 	fs := newFlagSet("image delete", a.Stderr)
 	provider := fs.String("provider", "aws", "image provider: aws, azure, or gcp")
