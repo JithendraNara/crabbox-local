@@ -22,7 +22,6 @@ func TestDesktopLaunchRemoteCommandUsesDetachedPOSIXSession(t *testing.T) {
 		"BROWSER='/usr/bin/chromium'",
 		"setsid '/usr/bin/chromium' 'https://example.com'",
 		"crabbox-desktop-launch.log",
-		"swaymsg '[app_id=\"google-chrome\"] floating enable",
 		"wmctrl -r :ACTIVE: -b remove,fullscreen",
 		"xdotool search --onlyvisible --class google-chrome",
 		"windowsize \"$window\" 1500 900",
@@ -30,6 +29,9 @@ func TestDesktopLaunchRemoteCommandUsesDetachedPOSIXSession(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("desktop launch command missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "swaymsg") {
+		t.Fatalf("desktop launch command should not use Sway-specific window commands:\n%s", got)
 	}
 }
 

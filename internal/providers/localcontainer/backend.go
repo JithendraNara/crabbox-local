@@ -934,7 +934,7 @@ func localContainerReadyCheck(cfg core.Config) string {
 	if cfg.Desktop {
 		if core.NormalizedDesktopEnv(cfg.DesktopEnv) == "wayland" {
 			checks = append(checks,
-				"pgrep -x sway >/dev/null",
+				"pgrep -x labwc >/dev/null",
 				"pgrep -x wayvnc >/dev/null",
 				"ss -ltn | grep -q '127.0.0.1:5900'",
 				"test -s /var/lib/crabbox/vnc.password",
@@ -982,7 +982,7 @@ need_install=0
 if [ "${CRABBOX_DESKTOP:-0}" = "1" ] && command -v apt-get >/dev/null 2>&1; then
   apt-get update
   if [ "${CRABBOX_DESKTOP_ENV:-xfce}" = "wayland" ]; then
-    apt-get install -y --no-install-recommends sway wayvnc foot grim slurp wtype wl-clipboard dbus-user-session xwayland xdg-desktop-portal-wlr fonts-dejavu-core fonts-liberation iproute2 openssl procps netcat-openbsd novnc websockify
+    apt-get install -y --no-install-recommends labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr dbus-user-session xwayland xdg-desktop-portal-wlr fonts-dejavu-core fonts-liberation iproute2 openssl procps netcat-openbsd novnc websockify
   else
     apt-get install -y --no-install-recommends xvfb xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf xfce4-settings x11vnc xauth dbus-x11 x11-xserver-utils xterm scrot ffmpeg xdotool wmctrl xclip xsel fonts-dejavu-core fonts-liberation iproute2 openssl arc-theme procps netcat-openbsd novnc websockify
   fi
@@ -1088,61 +1088,27 @@ if [ "${CRABBOX_DESKTOP:-0}" = "1" ]; then
     chown "$user" /var/lib/crabbox/vnc.password
     chmod 0600 /var/lib/crabbox/vnc.password
     runtime="/tmp/crabbox-runtime-$(id -u "$user")"
-    install -d -m 0700 -o "$user" "$runtime" "$home_dir/.config/sway" "$home_dir/.config/wayvnc"
-    cat > /usr/local/bin/crabbox-sway-status <<'STATUS'
-#!/bin/sh
-while :; do
-  printf 'Crabbox Wayland - Mod+Enter/D terminal - %s\n' "$(date '+%H:%M:%S')"
-  sleep 1
-done
-STATUS
-    chmod 0755 /usr/local/bin/crabbox-sway-status
-    cat > "$home_dir/.config/sway/config" <<'SWAY'
-set $mod Mod4
-set $term foot
-set $menu foot --title='Crabbox Desktop'
-output * resolution 1920x1080 position 0,0
-default_border pixel 2
-default_floating_border pixel 2
-gaps inner 8
-gaps outer 12
-focus_follows_mouse no
-client.focused #2dd4bf #1f2937 #f8fafc #2dd4bf #2dd4bf
-client.unfocused #475569 #111827 #cbd5e1 #475569 #475569
-bindsym $mod+Return exec $term
-bindsym $mod+d exec $menu
-bindsym $mod+Shift+c reload
-bindsym $mod+Shift+q kill
-for_window [app_id="foot"] floating enable, resize set width 900 px height 640 px, move position 48 px 72 px
-for_window [app_id="google-chrome"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px
-for_window [app_id="chromium"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px
-exec foot --title='Crabbox Desktop'
-bar {
-    position top
-    status_command /usr/local/bin/crabbox-sway-status
-    colors {
-        background #111827
-        statusline #e5e7eb
-        focused_workspace #2dd4bf #1f2937 #f8fafc
-        inactive_workspace #1f2937 #111827 #cbd5e1
-    }
-}
-SWAY
+    install -d -m 0700 -o "$user" "$runtime" "$home_dir/.config/labwc" "$home_dir/.config/wayvnc"
+    cat > "$home_dir/.config/labwc/autostart" <<'AUTOSTART'
+wlr-randr --output HEADLESS-1 --custom-mode 1920x1080 >/tmp/crabbox-wlr-randr.log 2>&1 || true
+foot --title='Crabbox Desktop' >/tmp/crabbox-foot.log 2>&1 &
+AUTOSTART
+    chmod 0755 "$home_dir/.config/labwc/autostart"
     cat > "$home_dir/.config/wayvnc/config" <<'WAYVNC'
 address=127.0.0.1
 port=5900
 enable_auth=false
 xkb_layout=us
 WAYVNC
-    chown -R "$user" "$home_dir/.config/sway" "$home_dir/.config/wayvnc"
+    chown -R "$user" "$home_dir/.config/labwc" "$home_dir/.config/wayvnc"
     cat >/usr/local/bin/crabbox-start-desktop <<'DESKTOP'
 #!/bin/sh
 set -eu
 user="${CRABBOX_SSH_USER:-crabbox}"
 runtime="/tmp/crabbox-runtime-$(id -u "$user")"
 install -d -m 0700 -o "$user" "$runtime"
-if ! pgrep -u "$user" -x sway >/dev/null 2>&1; then
-  su "$user" -s /bin/sh -c "XDG_RUNTIME_DIR='$runtime' WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman MOZ_ENABLE_WAYLAND=1 dbus-run-session sway --unsupported-gpu >/tmp/crabbox-sway.log 2>&1 &"
+if ! pgrep -u "$user" -x labwc >/dev/null 2>&1; then
+  su "$user" -s /bin/sh -c "XDG_RUNTIME_DIR='$runtime' WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman MOZ_ENABLE_WAYLAND=1 dbus-run-session labwc >/tmp/crabbox-labwc.log 2>&1 &"
 fi
 display=""
 for _ in $(seq 1 30); do

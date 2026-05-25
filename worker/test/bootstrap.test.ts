@@ -157,27 +157,17 @@ describe("cloud-init bootstrap", () => {
 
   it("adds Wayland desktop services when requested", () => {
     const got = cloudInit({ ...config, desktop: true, desktopEnv: "wayland", browser: true });
-    expect(got).toContain("sway wayvnc foot grim slurp wtype wl-clipboard");
+    expect(got).toContain("labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr");
     expect(got).toContain("xdg-desktop-portal-wlr");
     expect(got).toContain("/usr/local/bin/crabbox-start-wayland-desktop");
     expect(got).toContain("/etc/systemd/system/crabbox-wayvnc.service");
     expect(got).toContain("CRABBOX_DESKTOP_ENV=wayland");
     expect(got).toContain("WLR_BACKENDS=headless");
-    expect(got).toContain("exec dbus-run-session sway --unsupported-gpu");
-    expect(got).toContain("bindsym $mod+Return exec $term");
-    expect(got).toContain("bindsym $mod+d exec $menu");
-    expect(got).toContain("set $menu foot --title='Crabbox Desktop'");
-    expect(got).toContain("floating_modifier $mod normal");
-    expect(got).toContain("default_border normal 2");
-    expect(got).toContain("titlebar_padding 6 4");
-    expect(got).toContain("bindsym $mod+q kill");
-    expect(got).toContain('    for_window [app_id=".*"] floating enable');
-    expect(got).toContain('    for_window [class=".*"] floating enable');
-    expect(got).toContain('    for_window [app_id="google-chrome"] floating enable');
-    expect(got).toContain("/usr/local/bin/crabbox-sway-status");
-    expect(got).toContain("printf 'Crabbox Wayland - Mod+Enter/D terminal - %s\\n'");
-    expect(got).not.toContain("printf 'Crabbox Wayland - Mod+Enter/D terminal - %s\n'");
-    expect(got).toContain("status_command /usr/local/bin/crabbox-sway-status");
+    expect(got).toContain("exec dbus-run-session labwc");
+    expect(got).toContain("install -d -m 0700 -o crabbox -g crabbox /home/crabbox/.config/labwc");
+    expect(got).toContain("cat >/home/crabbox/.config/labwc/autostart");
+    expect(got).toContain("wlr-randr --output HEADLESS-1 --custom-mode 1920x1080");
+    expect(got).toContain("foot --title='Crabbox Desktop' >/tmp/crabbox-foot.log 2>&1 &");
     expect(got).toContain('for socket in "$XDG_RUNTIME_DIR"/wayland-*');
     expect(got).toContain('WAYLAND_DISPLAY="${socket##*/}"');
     expect(got).toContain(
@@ -194,6 +184,8 @@ describe("cloud-init bootstrap", () => {
     expect(got).not.toContain("x11vnc -storepasswd");
     expect(got).not.toContain("XDG_RUNTIME_DIR=/tmp/crabbox-runtime-1000");
     expect(got).not.toContain("\nset $mod");
+    expect(got).not.toContain("sway --unsupported-gpu");
+    expect(got).not.toContain("crabbox-sway-status");
     expect(got).not.toContain("\nSWAY");
     expect(got).not.toContain("\nCRABBOX_DESKTOP_ENV=wayland");
     expect(got).not.toContain("\nEOF");

@@ -902,15 +902,7 @@ func cloudInitWaylandDesktopWriteFiles() string {
       export WLR_LIBINPUT_NO_DEVICES=1
       export WLR_RENDERER="${WLR_RENDERER:-pixman}"
       export MOZ_ENABLE_WAYLAND=1
-      exec dbus-run-session sway --unsupported-gpu
-  - path: /usr/local/bin/crabbox-sway-status
-    permissions: '0755'
-    content: |
-      #!/bin/sh
-      while :; do
-        printf 'Crabbox Wayland - Mod+Enter/D terminal - %s\n' "$(date '+%H:%M:%S')"
-        sleep 1
-      done
+      exec dbus-run-session labwc
   - path: /etc/systemd/system/crabbox-desktop.service
     permissions: '0644'
     content: |
@@ -974,7 +966,7 @@ func cloudInitOptionalBootstrap(cfg Config) string {
 		parts = append(parts, cloudInitTailscaleBootstrap(cfg))
 	}
 	if cfg.Desktop && normalizedDesktopEnv(cfg.DesktopEnv) == desktopEnvWayland {
-		parts = append(parts, `    retry apt-get install -y --no-install-recommends sway wayvnc foot grim slurp wtype wl-clipboard dbus-user-session xwayland xdg-desktop-portal-wlr fonts-dejavu-core fonts-liberation iproute2 openssl procps
+		parts = append(parts, `    retry apt-get install -y --no-install-recommends labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr dbus-user-session xwayland xdg-desktop-portal-wlr fonts-dejavu-core fonts-liberation iproute2 openssl procps
     install -d -m 0750 -o crabbox -g crabbox /var/lib/crabbox
     if [ ! -s /var/lib/crabbox/vnc.password ]; then
       (umask 077 && openssl rand -base64 18 > /var/lib/crabbox/vnc.password)
@@ -984,44 +976,12 @@ func cloudInitOptionalBootstrap(cfg Config) string {
     crabbox_uid="$(id -u crabbox)"
     crabbox_runtime="/tmp/crabbox-runtime-$crabbox_uid"
     install -d -m 0700 -o crabbox -g crabbox "$crabbox_runtime"
-    install -d -m 0700 -o crabbox -g crabbox /home/crabbox/.config/sway /home/crabbox/.config/wayvnc
-    cat >/home/crabbox/.config/sway/config <<'SWAY'
-    set $mod Mod4
-    set $term foot
-    set $menu foot --title='Crabbox Desktop'
-    output * resolution 1920x1080 position 0,0
-    floating_modifier $mod normal
-    default_border normal 2
-    default_floating_border normal 2
-    titlebar_border_thickness 1
-    titlebar_padding 6 4
-    gaps inner 0
-    gaps outer 0
-    focus_follows_mouse no
-    client.focused #2dd4bf #1f2937 #f8fafc #2dd4bf #2dd4bf
-    client.unfocused #475569 #111827 #cbd5e1 #475569 #475569
-    bindsym $mod+Return exec $term
-    bindsym $mod+d exec $menu
-    bindsym $mod+q kill
-    bindsym $mod+Shift+c reload
-    bindsym $mod+Shift+q kill
-    for_window [app_id=".*"] floating enable
-    for_window [class=".*"] floating enable
-    for_window [app_id="foot"] floating enable, resize set width 900 px height 640 px, move position 48 px 72 px
-    for_window [app_id="google-chrome"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px
-    for_window [app_id="chromium"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px
-    exec foot --title='Crabbox Desktop'
-    bar {
-        position top
-        status_command /usr/local/bin/crabbox-sway-status
-        colors {
-            background #111827
-            statusline #e5e7eb
-            focused_workspace #2dd4bf #1f2937 #f8fafc
-            inactive_workspace #1f2937 #111827 #cbd5e1
-        }
-    }
-    SWAY
+    install -d -m 0700 -o crabbox -g crabbox /home/crabbox/.config/labwc /home/crabbox/.config/wayvnc
+    cat >/home/crabbox/.config/labwc/autostart <<'AUTOSTART'
+    wlr-randr --output HEADLESS-1 --custom-mode 1920x1080 >/tmp/crabbox-wlr-randr.log 2>&1 || true
+    foot --title='Crabbox Desktop' >/tmp/crabbox-foot.log 2>&1 &
+    AUTOSTART
+    chmod 0755 /home/crabbox/.config/labwc/autostart
     cat >/home/crabbox/.config/wayvnc/config <<'WAYVNC'
     address=127.0.0.1
     port=5900
@@ -1033,7 +993,7 @@ func cloudInitOptionalBootstrap(cfg Config) string {
     XDG_RUNTIME_DIR=$crabbox_runtime
     WAYLAND_DISPLAY=wayland-1
     EOF
-    chown -R crabbox:crabbox /home/crabbox/.config/sway /home/crabbox/.config/wayvnc /var/lib/crabbox/desktop.env
+    chown -R crabbox:crabbox /home/crabbox/.config/labwc /home/crabbox/.config/wayvnc /var/lib/crabbox/desktop.env
     chmod 0644 /var/lib/crabbox/desktop.env
     systemctl daemon-reload
     systemctl disable --now crabbox-xvfb.service crabbox-desktop-session.service crabbox-x11vnc.service 2>/dev/null || true

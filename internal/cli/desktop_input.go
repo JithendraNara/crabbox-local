@@ -564,7 +564,7 @@ if [ "${CRABBOX_DESKTOP_ENV:-xfce}" = "wayland" ]; then
     fi
   }
   [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ] && echo "session ok wayland=$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" || echo "session failed wayland repair=restart crabbox-desktop.service"
-  CRABBOX_REPAIR="restart crabbox-desktop.service"; check session sway pgrep -x sway
+  CRABBOX_REPAIR="restart crabbox-desktop.service"; check session labwc pgrep -x labwc
   CRABBOX_REPAIR="restart crabbox-wayvnc.service"; check vm vnc ss -ltn sport = :5900
   CRABBOX_REPAIR="warm a new --desktop-env wayland lease or install wtype"; check input wtype command -v wtype
   CRABBOX_REPAIR="warm a new --desktop-env wayland lease or install wl-clipboard"; check input clipboard command -v wl-copy

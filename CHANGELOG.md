@@ -13,7 +13,7 @@
 
 - Fixed AWS Linux desktop bootstrap so generated theme helpers include the latest WebVNC desktop styling on fresh leases.
 - Fixed AWS Linux desktop bootstrap so existing desktop services are restarted after profile changes instead of leaving stale XFCE/X11 services running under a Wayland profile.
-- Changed the experimental Wayland desktop bootstrap to use floating Sway windows with title bars by default, making WebVNC sessions behave more like a conventional desktop.
+- Changed the experimental Wayland desktop bootstrap to use labwc, giving WebVNC sessions normal draggable, decorated windows instead of Sway tiling defaults.
 - Fixed the W&B Sandboxes provider default endpoint to follow the current upstream `api.cwsandbox.com` API host.
 - Fixed Linux WebVNC desktop panel styling so status and taskbar items avoid harsh high-contrast borders in dark mode.
 - Fixed Linux WebVNC terminal windows so the XFCE Terminal menu bar follows the dark desktop theme.
@@ -24,7 +24,7 @@
 
 - Added `provider: wandb` for W&B/CoreWeave Sandbox delegated runs through the native gRPC API. Thanks @zozo123.
 - Added AWS doctor capacity readiness checks that surface Spot and On-Demand vCPU quota pressure before warmup. Thanks @jwmoss.
-- Added an experimental Linux `--desktop-env wayland` profile using Sway, WayVNC, Wayland browser launch env, and `grim` screenshots while keeping XFCE as the default desktop.
+- Added an experimental Linux `--desktop-env wayland` profile using labwc, WayVNC, Wayland browser launch env, and `grim` screenshots while keeping XFCE as the default desktop.
 
 ### Fixed
 

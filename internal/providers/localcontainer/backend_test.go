@@ -397,18 +397,17 @@ func TestBootstrapScriptUsesAccountHomeDirectory(t *testing.T) {
 func TestBootstrapScriptSupportsWaylandDesktop(t *testing.T) {
 	for _, want := range []string{
 		`CRABBOX_DESKTOP_ENV:-xfce`,
-		`sway wayvnc foot grim slurp wtype wl-clipboard`,
+		`labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr`,
 		`xdg-desktop-portal-wlr`,
 		`CRABBOX_DESKTOP_ENV=wayland`,
-		`bindsym $mod+Return exec $term`,
-		`set $menu foot --title='Crabbox Desktop'`,
-		`for_window [app_id="google-chrome"] floating enable`,
-		`/usr/local/bin/crabbox-sway-status`,
-		`status_command /usr/local/bin/crabbox-sway-status`,
+		`.config/labwc/autostart`,
+		`wlr-randr --output HEADLESS-1 --custom-mode 1920x1080`,
+		`foot --title='Crabbox Desktop' >/tmp/crabbox-foot.log 2>&1 &`,
 		`for socket in "$runtime"/wayland-*`,
 		`display="${socket##*/}"`,
 		`WLR_BACKENDS=headless`,
-		`dbus-run-session sway --unsupported-gpu`,
+		`dbus-run-session labwc`,
+		`/tmp/crabbox-labwc.log`,
 		`wayvnc --config`,
 		`--ozone-platform=wayland`,
 	} {
@@ -424,7 +423,7 @@ func TestBootstrapScriptSupportsWaylandDesktop(t *testing.T) {
 	cfg.LocalContainer.WorkRoot = "/work/crabbox"
 	got := localContainerReadyCheck(cfg)
 	for _, want := range []string{
-		"pgrep -x sway",
+		"pgrep -x labwc",
 		"pgrep -x wayvnc",
 		"127.0.0.1:5900",
 	} {

@@ -88,7 +88,7 @@ func TestStaticDesktopProbeCommandRequiresWaylandEnvFile(t *testing.T) {
 		`XDG_RUNTIME_DIR`,
 		`WAYLAND_DISPLAY`,
 		`test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"`,
-		`pgrep -x sway`,
+		`pgrep -x labwc`,
 		`pgrep -x wayvnc`,
 	} {
 		if !strings.Contains(got, want) {
@@ -104,8 +104,8 @@ func TestStaticDesktopProbeCommandDefaultsToX11(t *testing.T) {
 			t.Fatalf("static x11 probe missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "pgrep -x sway") {
-		t.Fatalf("default static desktop probe should not accept unmanaged sway:\n%s", got)
+	if strings.Contains(got, "pgrep -x labwc") {
+		t.Fatalf("default static desktop probe should not accept unmanaged labwc:\n%s", got)
 	}
 }
 

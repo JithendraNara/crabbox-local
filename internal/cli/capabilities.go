@@ -190,7 +190,7 @@ func probeStaticDesktop(ctx context.Context, cfg Config, target SSHTarget) error
 	check := staticDesktopProbeCommand(cfg, target)
 	if err := runSSHQuiet(ctx, target, check); err != nil {
 		if normalizedDesktopEnv(cfg.DesktopEnv) == desktopEnvWayland {
-			return exit(2, "target=linux does not expose a Crabbox Wayland desktop; create %s with CRABBOX_DESKTOP_ENV=wayland, XDG_RUNTIME_DIR, and WAYLAND_DISPLAY, then start Sway/WayVNC on 127.0.0.1:5900", desktopEnvPath)
+			return exit(2, "target=linux does not expose a Crabbox Wayland desktop; create %s with CRABBOX_DESKTOP_ENV=wayland, XDG_RUNTIME_DIR, and WAYLAND_DISPLAY, then start labwc/WayVNC on 127.0.0.1:5900", desktopEnvPath)
 		}
 		return exit(2, "target=linux does not expose a loopback X11 VNC desktop; start Xvfb/x11vnc on 127.0.0.1:5900 or request --desktop-env wayland for a configured Wayland target")
 	}
@@ -203,7 +203,7 @@ func staticDesktopProbeCommand(cfg Config, target SSHTarget) string {
 			`test "${CRABBOX_DESKTOP_ENV:-}" = "wayland" && ` +
 			`test -n "${XDG_RUNTIME_DIR:-}" && test -n "${WAYLAND_DISPLAY:-}" && ` +
 			`test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && ` +
-			`pgrep -x sway >/dev/null && pgrep -x wayvnc >/dev/null && ` + vncLoopbackCheckCommand(target)
+			`pgrep -x labwc >/dev/null && pgrep -x wayvnc >/dev/null && ` + vncLoopbackCheckCommand(target)
 	}
 	return `pgrep -f 'Xvfb :99' >/dev/null && pgrep -f x11vnc >/dev/null && ` + vncLoopbackCheckCommand(target)
 }

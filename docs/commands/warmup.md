@@ -188,7 +188,7 @@ Chromium package fallback.
 
 `--desktop` provisions a visible UI and loopback-bound VNC for automation and
 operator takeover. Linux defaults to Xvfb, slim XFCE, and x11vnc; use
-`--desktop-env wayland` for the experimental Sway/WayVNC profile on Ubuntu
+`--desktop-env wayland` for the experimental labwc/WayVNC profile on Ubuntu
 24.04-compatible images. It does not imply a browser. Use `--desktop --browser`
 when a headed browser should run in the visible display.
 

@@ -715,14 +715,6 @@ func posixWindowBrowserCommand() string {
   if [ -f /var/lib/crabbox/desktop.env ]; then . /var/lib/crabbox/desktop.env; fi
   if [ "${CRABBOX_DESKTOP_ENV:-xfce}" = "wayland" ]; then
     export XDG_RUNTIME_DIR WAYLAND_DISPLAY
-    if [ -z "${SWAYSOCK:-}" ]; then
-      SWAYSOCK="$(ls "$XDG_RUNTIME_DIR"/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
-      export SWAYSOCK
-    fi
-    if command -v swaymsg >/dev/null 2>&1; then
-      swaymsg '[app_id="google-chrome"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px, focus' >/dev/null 2>&1 ||
-      swaymsg '[app_id="chromium"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px, focus' >/dev/null 2>&1 || true
-    fi
     exit 0
   fi
   export DISPLAY="${DISPLAY:-:99}"
