@@ -990,17 +990,23 @@ func cloudInitOptionalBootstrap(cfg Config) string {
     set $term foot
     set $menu foot --title='Crabbox Desktop'
     output * resolution 1920x1080 position 0,0
-    default_border pixel 2
-    default_floating_border pixel 2
-    gaps inner 8
-    gaps outer 12
+    floating_modifier $mod normal
+    default_border normal 2
+    default_floating_border normal 2
+    titlebar_border_thickness 1
+    titlebar_padding 6 4
+    gaps inner 0
+    gaps outer 0
     focus_follows_mouse no
     client.focused #2dd4bf #1f2937 #f8fafc #2dd4bf #2dd4bf
     client.unfocused #475569 #111827 #cbd5e1 #475569 #475569
     bindsym $mod+Return exec $term
     bindsym $mod+d exec $menu
+    bindsym $mod+q kill
     bindsym $mod+Shift+c reload
     bindsym $mod+Shift+q kill
+    for_window [app_id=".*"] floating enable
+    for_window [class=".*"] floating enable
     for_window [app_id="foot"] floating enable, resize set width 900 px height 640 px, move position 48 px 72 px
     for_window [app_id="google-chrome"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px
     for_window [app_id="chromium"] floating enable, resize set width 1500 px height 900 px, move position 360 px 96 px

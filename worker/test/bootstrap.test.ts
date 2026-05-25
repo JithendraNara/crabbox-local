@@ -167,6 +167,12 @@ describe("cloud-init bootstrap", () => {
     expect(got).toContain("bindsym $mod+Return exec $term");
     expect(got).toContain("bindsym $mod+d exec $menu");
     expect(got).toContain("set $menu foot --title='Crabbox Desktop'");
+    expect(got).toContain("floating_modifier $mod normal");
+    expect(got).toContain("default_border normal 2");
+    expect(got).toContain("titlebar_padding 6 4");
+    expect(got).toContain("bindsym $mod+q kill");
+    expect(got).toContain('    for_window [app_id=".*"] floating enable');
+    expect(got).toContain('    for_window [class=".*"] floating enable');
     expect(got).toContain('    for_window [app_id="google-chrome"] floating enable');
     expect(got).toContain("/usr/local/bin/crabbox-sway-status");
     expect(got).toContain("printf 'Crabbox Wayland - Mod+Enter/D terminal - %s\\n'");
