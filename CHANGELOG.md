@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.19.1 - Unreleased
+## 0.20.0 - 2026-05-26
 
 ### Added
 
@@ -9,6 +9,7 @@
 - Added failed-run follow-through output with a compact digest that shows the failed phase, likely area, retryability, next commands, and a short redacted tail.
 - Added `crabbox doctor --from-run <run-id>` to load provider, target, class, type, lease, and phase context from recorded run history before diagnostics.
 - Added `crabbox logs --tail`, `crabbox events --type`, `crabbox events --phase`, and `crabbox results --failed-only` for faster recorded-run triage.
+
 ### Fixed
 
 - Fixed Blacksmith Testbox runs so repo-level env allowlists for SSH-backed providers no longer block delegated Testbox warmup.
