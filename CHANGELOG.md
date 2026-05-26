@@ -5,11 +5,11 @@
 ### Added
 
 - Added a portable `--os`/`os` lease selector with Ubuntu 26.04 as the preferred Linux image where provider catalogs support it, while preserving explicit provider image overrides.
-- Added `--desktop-env lxqt` for a lightweight LXQt panel/desktop on labwc with WayVNC.
+- Added `--desktop-env gnome` for a GNOME-apps desktop profile on labwc/WayVNC.
 
 ### Fixed
 
-- Fixed the LXQt labwc desktop profile to show the bottom taskbar by running LXQt shell apps through Xwayland and giving generated browser wrappers a private profile directory.
+- Removed the short-lived LXQt desktop profile before release.
 - Fixed Daytona provider sandbox inventory to use Daytona's cursor-based listing API.
 - Removed OpenClaw-specific hosted broker defaults and documentation from the generic Crabbox broker login flow.
 

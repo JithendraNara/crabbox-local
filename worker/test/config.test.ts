@@ -245,14 +245,14 @@ describe("lease config", () => {
       desktopEnv: "wayland",
     });
     expect(config.desktopEnv).toBe("wayland");
-    const lxqt = leaseConfig({
+    const gnome = leaseConfig({
       sshPublicKey: "ssh-ed25519 test",
       desktop: true,
-      desktopEnv: "lxqt",
+      desktopEnv: "gnome",
     });
-    expect(lxqt.desktopEnv).toBe("lxqt");
-    expect(() => leaseConfig({ sshPublicKey: "ssh-ed25519 test", desktopEnv: "gnome" })).toThrow(
-      "desktopEnv must be xfce, wayland, or lxqt",
+    expect(gnome.desktopEnv).toBe("gnome");
+    expect(() => leaseConfig({ sshPublicKey: "ssh-ed25519 test", desktopEnv: "kde" })).toThrow(
+      "desktopEnv must be xfce, wayland, or gnome",
     );
     expect(() =>
       leaseConfig({
@@ -260,9 +260,9 @@ describe("lease config", () => {
         provider: "aws",
         target: "windows",
         desktop: true,
-        desktopEnv: "lxqt",
+        desktopEnv: "gnome",
       }),
-    ).toThrow("desktopEnv=lxqt requires target=linux");
+    ).toThrow("desktopEnv=gnome requires target=linux");
   });
 
   it("preserves Tailscale lease capability requests", () => {

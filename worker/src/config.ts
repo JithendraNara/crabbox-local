@@ -19,7 +19,7 @@ export interface LeaseConfig {
   os: string;
   windowsMode: WindowsMode;
   desktop: boolean;
-  desktopEnv: "xfce" | "wayland" | "lxqt";
+  desktopEnv: "xfce" | "wayland" | "gnome";
   browser: boolean;
   code: boolean;
   tailscale: boolean;
@@ -123,7 +123,7 @@ export function leaseConfig(input: LeaseRequest, defaults: LeaseConfigDefaults =
     );
   }
   const desktopEnv = normalizeDesktopEnv(input.desktopEnv);
-  if ((desktopEnv === "wayland" || desktopEnv === "lxqt") && input.desktop && target !== "linux") {
+  if ((desktopEnv === "wayland" || desktopEnv === "gnome") && input.desktop && target !== "linux") {
     throw new Error(`desktopEnv=${desktopEnv} requires target=linux`);
   }
   if (target === "macos") {
@@ -214,7 +214,7 @@ export function leaseConfig(input: LeaseRequest, defaults: LeaseConfigDefaults =
   };
 }
 
-export function normalizeDesktopEnv(value: string | undefined): "xfce" | "wayland" | "lxqt" {
+export function normalizeDesktopEnv(value: string | undefined): "xfce" | "wayland" | "gnome" {
   const normalized = (value ?? "").trim().toLowerCase();
   switch (normalized) {
     case "":
@@ -222,10 +222,10 @@ export function normalizeDesktopEnv(value: string | undefined): "xfce" | "waylan
       return "xfce";
     case "wayland":
       return "wayland";
-    case "lxqt":
-      return "lxqt";
+    case "gnome":
+      return "gnome";
     default:
-      throw new Error("desktopEnv must be xfce, wayland, or lxqt");
+      throw new Error("desktopEnv must be xfce, wayland, or gnome");
   }
 }
 

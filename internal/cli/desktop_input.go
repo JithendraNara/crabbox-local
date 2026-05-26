@@ -566,9 +566,9 @@ if [ "${CRABBOX_DESKTOP_ENV:-xfce}" != "xfce" ]; then
   [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ] && echo "session ok wayland=$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" || echo "session failed wayland repair=restart crabbox-desktop.service"
   CRABBOX_REPAIR="restart crabbox-desktop.service"; check session labwc pgrep -x labwc
   CRABBOX_REPAIR="restart crabbox-wayvnc.service"; check vm vnc ss -ltn sport = :5900
-  CRABBOX_REPAIR="warm a new --desktop-env wayland lease or install wtype"; check input wtype command -v wtype
-  CRABBOX_REPAIR="warm a new --desktop-env wayland lease or install wl-clipboard"; check input clipboard command -v wl-copy
-  CRABBOX_REPAIR="warm a new --desktop-env wayland lease or install grim"; check capture screenshot command -v grim
+  CRABBOX_REPAIR="warm a new Wayland desktop lease or install wtype"; check input wtype command -v wtype
+  CRABBOX_REPAIR="warm a new Wayland desktop lease or install wl-clipboard"; check input clipboard command -v wl-copy
+  CRABBOX_REPAIR="warm a new Wayland desktop lease or install grim"; check capture screenshot command -v grim
   CRABBOX_REPAIR="warm with --browser or install Chrome/Chromium"; if [ -f /var/lib/crabbox/browser.env ]; then . /var/lib/crabbox/browser.env; fi; if [ -n "${BROWSER:-}" ] && [ -x "$BROWSER" ]; then echo "session ok browser=$BROWSER"; elif command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo "session ok browser"; else echo "session failed browser repair=$CRABBOX_REPAIR"; fi
   exit 0
 fi

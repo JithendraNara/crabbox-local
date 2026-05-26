@@ -192,30 +192,26 @@ describe("cloud-init bootstrap", () => {
     expect(got).not.toContain("\n#!/bin/sh\nwhile");
   });
 
-  it("adds LXQt on labwc desktop services when requested", () => {
-    const got = cloudInit({ ...config, desktop: true, desktopEnv: "lxqt", browser: true });
-    expect(got).toContain("labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr");
-    expect(got).toContain("lxqt-session lxqt-panel pcmanfm-qt qterminal lxqt-qtplugin");
-    expect(got).toContain("apt-cache show qt6-wayland");
-    expect(got).toContain("apt-cache show qtwayland5");
-    expect(got).toContain("CRABBOX_DESKTOP_ENV=lxqt");
+  it("adds GNOME Wayland desktop services when requested", () => {
+    const got = cloudInit({ ...config, desktop: true, desktopEnv: "gnome", browser: true });
+    expect(got).toContain("labwc wayvnc wlr-randr grim slurp wtype wl-clipboard");
+    expect(got).toContain("dbus-user-session xwayland");
+    expect(got).toContain("gnome-terminal nautilus gsettings-desktop-schemas adwaita-icon-theme");
+    expect(got).toContain("/usr/local/bin/crabbox-start-wayland-desktop");
+    expect(got).toContain("CRABBOX_DESKTOP_ENV=gnome");
+    expect(got).toContain("WAYLAND_DISPLAY=wayland-1");
+    expect(got).toContain("exec dbus-run-session labwc");
+    expect(got).toContain("gnome-terminal -- bash -l");
+    expect(got).toContain("nautilus --new-window");
     expect(got).toContain("rm -f /var/lib/crabbox/display.env");
-    expect(got).toContain("cat /var/lib/crabbox/display.env >>/var/lib/crabbox/desktop.env");
-    expect(got).toContain("XDG_CURRENT_DESKTOP=LXQt");
-    expect(got).toContain("printf 'DISPLAY=%s\\n' \"$DISPLAY\" >/var/lib/crabbox/display.env");
-    expect(got).toContain(
-      "printf 'XAUTHORITY=%s\\n' \"$XAUTHORITY\" >>/var/lib/crabbox/display.env",
-    );
-    expect(got).toContain("QT_QPA_PLATFORM=xcb lxqt-panel >/tmp/crabbox-lxqt-panel.log");
-    expect(got).toContain("QT_QPA_PLATFORM=xcb pcmanfm-qt --desktop --profile=lxqt");
-    expect(got).toContain('QT_QPA_PLATFORM=xcb qterminal --workdir="$HOME"');
     expect(got).toContain("/etc/systemd/system/crabbox-wayvnc.service");
-    expect(got).toContain("export DISPLAY XAUTHORITY MOZ_ENABLE_WAYLAND=0");
     expect(got).toContain("--user-data-dir=");
-    expect(got).toContain("--ozone-platform=x11");
     expect(got).toContain("--ozone-platform=wayland");
     expect(got).not.toContain("startxfce4");
     expect(got).not.toContain("x11vnc -storepasswd");
+    expect(got).not.toContain("gnome-shell");
+    expect(got).not.toContain("lxqt-panel");
+    expect(got).not.toContain("QT_QPA_PLATFORM=xcb");
   });
 
   it("starts ssh before optional desktop and browser bootstrap", () => {

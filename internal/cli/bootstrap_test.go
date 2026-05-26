@@ -186,43 +186,40 @@ func TestCloudInitWaylandDesktopProfile(t *testing.T) {
 	}
 }
 
-func TestCloudInitLXQtDesktopProfile(t *testing.T) {
+func TestCloudInitGnomeDesktopProfile(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Desktop = true
 	cfg.Browser = true
-	cfg.DesktopEnv = "lxqt"
+	cfg.DesktopEnv = "gnome"
 	got := cloudInit(cfg, "ssh-ed25519 test")
 	for _, want := range []string{
-		"labwc wayvnc foot grim slurp wtype wl-clipboard wlr-randr",
-		"lxqt-session lxqt-panel pcmanfm-qt qterminal lxqt-qtplugin",
-		"apt-cache show qt6-wayland",
-		"apt-cache show qtwayland5",
+		"labwc wayvnc wlr-randr grim slurp wtype wl-clipboard",
+		"dbus-user-session xwayland",
+		"gnome-terminal nautilus gsettings-desktop-schemas adwaita-icon-theme",
 		"/usr/local/bin/crabbox-start-wayland-desktop",
 		"/etc/systemd/system/crabbox-wayvnc.service",
-		"CRABBOX_DESKTOP_ENV=lxqt",
+		"CRABBOX_DESKTOP_ENV=gnome",
+		"WAYLAND_DISPLAY=wayland-1",
+		"exec dbus-run-session labwc",
+		"gnome-terminal -- bash -l",
+		"nautilus --new-window",
 		"rm -f /var/lib/crabbox/display.env",
-		"cat /var/lib/crabbox/display.env >>/var/lib/crabbox/desktop.env",
-		"XDG_CURRENT_DESKTOP=LXQt",
-		"printf 'DISPLAY=%s\\n' \"$DISPLAY\" >/var/lib/crabbox/display.env",
-		"printf 'XAUTHORITY=%s\\n' \"$XAUTHORITY\" >>/var/lib/crabbox/display.env",
-		"QT_QPA_PLATFORM=xcb lxqt-panel >/tmp/crabbox-lxqt-panel.log",
-		"QT_QPA_PLATFORM=xcb pcmanfm-qt --desktop --profile=lxqt",
-		"QT_QPA_PLATFORM=xcb qterminal --workdir=\"$HOME\"",
-		"export DISPLAY XAUTHORITY MOZ_ENABLE_WAYLAND=0",
 		"--user-data-dir=",
-		"--ozone-platform=x11",
 		"--ozone-platform=wayland",
 	} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("cloudInit(lxqt desktop) missing %q", want)
+			t.Fatalf("cloudInit(gnome desktop) missing %q", want)
 		}
 	}
 	for _, notWant := range []string{
 		"startxfce4",
 		"x11vnc -storepasswd",
+		"gnome-shell",
+		"lxqt-panel",
+		"QT_QPA_PLATFORM=xcb",
 	} {
 		if strings.Contains(got, notWant) {
-			t.Fatalf("cloudInit(lxqt desktop) contains %q", notWant)
+			t.Fatalf("cloudInit(gnome desktop) contains %q", notWant)
 		}
 	}
 }

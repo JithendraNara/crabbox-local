@@ -407,15 +407,11 @@ func TestBootstrapScriptSupportsWaylandDesktop(t *testing.T) {
 		`display="${socket##*/}"`,
 		`desktop_env="${CRABBOX_DESKTOP_ENV:-wayland}"`,
 		`CRABBOX_DESKTOP_ENV='$desktop_env'`,
-		`apt-cache show qt6-wayland`,
-		`apt-cache show qtwayland5`,
-		`printf 'DISPLAY=%s\n' "$DISPLAY" >/var/lib/crabbox/display.env`,
-		`printf 'XAUTHORITY=%s\n' "$XAUTHORITY" >>/var/lib/crabbox/display.env`,
-		`cat /var/lib/crabbox/display.env >>/var/lib/crabbox/desktop.env`,
-		`QT_QPA_PLATFORM=xcb lxqt-panel`,
-		`export DISPLAY XAUTHORITY MOZ_ENABLE_WAYLAND=0`,
+		`labwc wayvnc wlr-randr grim slurp wtype wl-clipboard`,
+		`gnome-terminal nautilus gsettings-desktop-schemas adwaita-icon-theme`,
+		`gnome-terminal -- bash -l`,
+		`nautilus --new-window "$HOME"`,
 		`--user-data-dir=`,
-		`--ozone-platform=x11`,
 		`WLR_BACKENDS=headless`,
 		`rm -f /var/lib/crabbox/display.env`,
 		`dbus-run-session labwc`,
@@ -445,6 +441,21 @@ func TestBootstrapScriptSupportsWaylandDesktop(t *testing.T) {
 	}
 	if strings.Contains(got, "Xvfb :99") || strings.Contains(got, "x11vnc") {
 		t.Fatalf("wayland ready check contains XFCE checks: %s", got)
+	}
+
+	cfg.DesktopEnv = "gnome"
+	got = localContainerReadyCheck(cfg)
+	for _, want := range []string{
+		"pgrep -x labwc",
+		"pgrep -x wayvnc",
+		"127.0.0.1:5900",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("gnome ready check missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "pgrep -x gnome-shell") || strings.Contains(got, "Xvfb :99") {
+		t.Fatalf("gnome ready check contains wrong compositor checks: %s", got)
 	}
 }
 

@@ -81,7 +81,7 @@ Warm a reusable box:
 crabbox warmup --idle-timeout 90m
 crabbox warmup --provider aws --class beast --market on-demand --idle-timeout 90m
 crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env wayland
-crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env lxqt
+crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env gnome
 ```
 
 `ubuntu:26.04` is the preferred portable Linux OS selector where the provider
@@ -217,7 +217,7 @@ the problem persists.
 crabbox status --id <id-or-slug> --wait
 crabbox inspect --id <id-or-slug> --json
 crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env wayland
-crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env lxqt
+crabbox warmup --provider aws --os ubuntu:26.04 --desktop --browser --desktop-env gnome
 crabbox webvnc --id <id-or-slug> --open
 crabbox webvnc daemon start --id <id-or-slug> --open
 crabbox webvnc daemon status --id <id-or-slug>

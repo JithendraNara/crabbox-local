@@ -97,13 +97,16 @@ func TestStaticDesktopProbeCommandRequiresWaylandEnvFile(t *testing.T) {
 	}
 }
 
-func TestStaticDesktopProbeCommandRequiresLXQtWhenRequested(t *testing.T) {
-	got := staticDesktopProbeCommand(Config{DesktopEnv: desktopEnvLXQT}, SSHTarget{TargetOS: targetLinux})
-	if !strings.Contains(got, `test "${CRABBOX_DESKTOP_ENV:-}" = "lxqt"`) {
-		t.Fatalf("static lxqt probe should require lxqt env:\n%s", got)
+func TestStaticDesktopProbeCommandRequiresGnomeWhenRequested(t *testing.T) {
+	got := staticDesktopProbeCommand(Config{DesktopEnv: desktopEnvGnome}, SSHTarget{TargetOS: targetLinux})
+	if !strings.Contains(got, `test "${CRABBOX_DESKTOP_ENV:-}" = "gnome"`) {
+		t.Fatalf("static gnome probe should require gnome env:\n%s", got)
 	}
-	if strings.Contains(got, `case "${CRABBOX_DESKTOP_ENV:-}" in wayland|lxqt)`) {
-		t.Fatalf("static lxqt probe should not accept plain wayland env:\n%s", got)
+	if !strings.Contains(got, `pgrep -x labwc >/dev/null`) {
+		t.Fatalf("static gnome probe should require the managed labwc compositor:\n%s", got)
+	}
+	if strings.Contains(got, `case "${CRABBOX_DESKTOP_ENV:-}" in wayland|gnome)`) {
+		t.Fatalf("static gnome probe should not accept plain wayland env:\n%s", got)
 	}
 }
 
