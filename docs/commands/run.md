@@ -37,7 +37,11 @@ crabbox run --profile live-qa --preset qa-live --scenario login-regression --emi
 
 If `--id` is omitted, Crabbox creates a fresh non-kept lease and releases it when the command exits. On coordinator-backed one-shot runs, if SSH becomes unavailable after a successful sync but before the command starts, Crabbox stops that stale lease, creates one replacement lease, and retries sync once. It does not replace explicit `--id`, kept, `--keep-on-failure`, `--no-sync`, `--sync-only`, or custom-slug runs. `--id` accepts the stable `cbx_...` ID or the active friendly slug.
 
-With `--provider blacksmith-testbox`, `--id` accepts a Blacksmith `tbx_...` ID or a local Crabbox slug. Crabbox forwards the command to `blacksmith testbox run`, delegates sync to Blacksmith, and prints `sync=delegated` in the final timing summary.
+With `--provider blacksmith-testbox`, `--id` accepts a Blacksmith `tbx_...` ID
+or a local Crabbox slug. Crabbox forwards the command to
+`blacksmith testbox run`, delegates sync to Blacksmith, and prints
+`sync=delegated` in the final timing summary. Add `--lease-output <file>` with
+`--keep` to write a small JSON handle for follow-up `--id` runs and cleanup.
 
 With `--provider namespace-devbox`, `--id` accepts a Crabbox `cbx_...` ID,
 local slug, or existing Devbox name. Namespace owns create, SSH config, and list
@@ -355,6 +359,7 @@ Flags:
 --label <text>
 --reclaim
 --timing-json
+--lease-output <file>
 --blacksmith-org <org>
 --blacksmith-workflow <file|name|id>
 --blacksmith-job <job>

@@ -153,6 +153,7 @@ const (
 	FeatureRestore     Feature = "workspace-restore"
 	FeatureSnapshot    Feature = "provider-snapshot"
 	FeatureRunProof    Feature = "run-proof"
+	FeatureRunSession  Feature = "run-session"
 )
 
 type FeatureSet []Feature
@@ -383,6 +384,7 @@ type RunResult struct {
 	Command       time.Duration
 	Total         time.Duration
 	SyncDelegated bool
+	Session       *RunSessionHandle
 	Provider      string
 	LeaseID       string
 	Slug          string
@@ -390,6 +392,17 @@ type RunResult struct {
 	LogExcerpt    string
 	ActionsURL    string
 	Artifacts     []RunArtifact
+}
+
+type RunSessionHandle struct {
+	Provider       string `json:"provider"`
+	LeaseID        string `json:"leaseId"`
+	Slug           string `json:"slug,omitempty"`
+	Reused         bool   `json:"reused"`
+	Kept           bool   `json:"kept"`
+	ActionsURL     string `json:"actionsUrl,omitempty"`
+	RunID          string `json:"runId,omitempty"`
+	CleanupCommand string `json:"cleanupCommand"`
 }
 
 type LeaseTarget struct {

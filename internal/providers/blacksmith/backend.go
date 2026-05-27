@@ -201,6 +201,16 @@ func (b *blacksmithBackend) Run(ctx context.Context, req RunRequest) (RunResult,
 	result.Command = commandDuration
 	result.Total = total
 	result.SyncDelegated = true
+	result.Session = &core.RunSessionHandle{
+		Provider:       blacksmithTestboxProvider,
+		LeaseID:        leaseID,
+		Slug:           slug,
+		Reused:         !acquired,
+		Kept:           !shouldStop,
+		ActionsURL:     result.ActionsURL,
+		RunID:          blacksmithActionsRunID(result.ActionsURL),
+		CleanupCommand: fmt.Sprintf("crabbox stop --provider %s %s", blacksmithTestboxProvider, leaseID),
+	}
 	if code != 0 {
 		local, bytes, bundleErr := core.CaptureLocalFailureBundle(leaseID, core.FailureCaptureMetadata{
 			Provider:   blacksmithTestboxProvider,
@@ -221,6 +231,7 @@ func (b *blacksmithBackend) Run(ctx context.Context, req RunRequest) (RunResult,
 			fmt.Fprintf(b.rt.Stderr, "failure-bundle local=%s bytes=%d secret_risk=caller-redacts-before-sharing\n", local, bytes)
 		}
 		core.HandleDelegatedRunFailure(b.rt.Stderr, req, blacksmithTestboxProvider, leaseID, slug, blacksmithIdleTimeout(b.cfg), b.cfg.TTL, acquired, &shouldStop)
+		result.Session.Kept = !shouldStop
 		return result, ExitError{Code: code, Message: fmt.Sprintf("blacksmith testbox run exited %d", code)}
 	}
 	return result, nil
@@ -324,6 +335,16 @@ func (b *blacksmithBackend) blacksmithProofResult(req RunRequest, leaseID, slug 
 
 func firstBlacksmithActionsURL(text string) string {
 	return githubActionsRunURLPattern.FindString(text)
+}
+
+func blacksmithActionsRunID(actionsURL string) string {
+	_, after, ok := strings.Cut(actionsURL, "/actions/runs/")
+	if !ok {
+		return ""
+	}
+	runID, _, _ := strings.Cut(after, "/")
+	runID, _, _ = strings.Cut(runID, "?")
+	return runID
 }
 
 func persistBlacksmithRunArtifacts(repoRoot, leaseID string, exitCode int, commandDuration, total time.Duration, report timingReport, stdoutData, stderrData []byte, result RunResult) ([]core.RunArtifact, error) {

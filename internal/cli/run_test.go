@@ -329,6 +329,7 @@ func TestRunCommandRejectsUnsupportedDelegatedCaptureOptions(t *testing.T) {
 		{name: "daytona download", provider: "daytona", args: []string{"--download", "/tmp/proof=proof.bin"}, want: "daytona delegates run execution; --download is not supported"},
 		{name: "islo download", provider: "islo", args: []string{"--download", "/tmp/proof=proof.bin"}, want: "islo delegates run execution; --download is not supported"},
 		{name: "e2b download", provider: "e2b", args: []string{"--download", "/tmp/proof=proof.bin"}, want: "e2b delegates run execution; --download is not supported"},
+		{name: "e2b lease output", provider: "e2b", args: []string{"--lease-output", "session.json"}, want: "--lease-output is not supported for provider=e2b yet"},
 		{name: "e2b stop after", provider: "e2b", args: []string{"--stop-after", "never"}, want: "e2b delegates run execution; --stop-after is not supported"},
 		{name: "daytona script", provider: "daytona", args: []string{"--script", "testdata/missing.sh"}, want: "daytona delegates run execution; --script is not supported"},
 		{name: "e2b fresh pr", provider: "e2b", args: []string{"--fresh-pr", "example-org/my-app#1"}, want: "e2b delegates sync; --fresh-pr is not supported"},
@@ -1044,6 +1045,8 @@ func TestRunCommandPreflightsLocalOutputOptions(t *testing.T) {
 		{name: "malformed download", args: []string{"--download", "out.bin", "--", "true"}, want: "--download expects remote=local"},
 		{name: "missing capture directory", args: []string{"--capture-stdout", filepath.Join(t.TempDir(), "missing", "stdout.bin"), "--", "true"}, want: "capture stdout:"},
 		{name: "missing stderr capture directory", args: []string{"--capture-stderr", filepath.Join(t.TempDir(), "missing", "stderr.bin"), "--", "true"}, want: "capture stderr:"},
+		{name: "missing lease output directory", args: []string{"--lease-output", filepath.Join(t.TempDir(), "missing", "session.json"), "--", "true"}, want: "lease output:"},
+		{name: "same lease output and proof path", args: []string{"--lease-output", "session.json", "--emit-proof", "session.json", "--", "true"}, want: "lease output and emit proof paths must be different"},
 		{name: "same capture path", args: []string{"--capture-stdout", "run.log", "--capture-stderr", "run.log", "--", "true"}, want: "paths must be different"},
 	}
 	for _, tt := range tests {
@@ -1058,6 +1061,34 @@ func TestRunCommandPreflightsLocalOutputOptions(t *testing.T) {
 				t.Fatalf("message=%q want %q", exitErr.Message, tt.want)
 			}
 		})
+	}
+}
+
+func TestWriteRunLeaseOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	session := &RunSessionHandle{
+		Provider:       "blacksmith-testbox",
+		LeaseID:        "tbx_abc123",
+		Slug:           "blue-lobster",
+		Kept:           true,
+		CleanupCommand: "crabbox stop --provider blacksmith-testbox tbx_abc123",
+	}
+	if err := writeRunLeaseOutput(path, session); err != nil {
+		t.Fatal(err)
+	}
+	var got RunSessionHandle
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != session.Provider || got.LeaseID != session.LeaseID || !got.Kept || got.CleanupCommand != session.CleanupCommand {
+		t.Fatalf("session=%#v", got)
+	}
+	if err := writeRunLeaseOutput(filepath.Join(t.TempDir(), "unsupported.json"), nil); err == nil || !strings.Contains(err.Error(), "provider did not return a session handle") {
+		t.Fatalf("unsupported err=%v", err)
 	}
 }
 

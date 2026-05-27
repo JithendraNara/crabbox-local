@@ -40,6 +40,15 @@ crabbox status --provider blacksmith-testbox --id tbx_123
 crabbox stop --provider blacksmith-testbox tbx_123
 ```
 
+Reusable session handoff:
+
+```sh
+crabbox run --provider blacksmith-testbox --keep --lease-output /tmp/session.json -- npm test
+lease_id="$(node -e 'console.log(require("/tmp/session.json").leaseId)')"
+crabbox run --provider blacksmith-testbox --id "$lease_id" -- npm run smoke
+crabbox stop --provider blacksmith-testbox "$lease_id"
+```
+
 Warm a fresh Testbox:
 
 ```sh
@@ -111,6 +120,9 @@ One-shot runs clean up the local claim/key and stop the Testbox after command
 completion unless `--keep` is set. Add `--keep-on-failure` when debugging live
 failures; successful runs still stop normally, while failed one-shot Testboxes
 remain available until idle timeout or explicit `crabbox stop`.
+Use `--lease-output <file>` with `crabbox run` to write a small JSON session
+handle for automation. The handle includes `leaseId`, reuse/keep state,
+detected Actions context, and a non-secret cleanup command.
 Failed runs save a local failure bundle with stdout/stderr, timing, and
 redacted env/config metadata even though remote file capture is delegated to
 Blacksmith. These implicit stream logs are capped so a verbose successful run

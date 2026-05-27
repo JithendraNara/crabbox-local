@@ -179,6 +179,7 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 	emitProof := fs.String("emit-proof", "", "write a generated proof block after a successful run")
 	proofTemplate := fs.String("proof-template", "", "proof template name from the selected profile")
 	stopAfter := fs.String("stop-after", "", "stop policy for the lease: success, always, failure, or never")
+	leaseOutput := fs.String("lease-output", "", "write a small JSON lease handle for orchestrators")
 	var downloads stringListFlag
 	var allowEnvFlags stringListFlag
 	var envProfileFlags stringListFlag
@@ -264,7 +265,21 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 	if err := preflightRunLocalOutputs(*captureStdout, *captureStderr, downloads); err != nil {
 		return err
 	}
+	if strings.TrimSpace(*leaseOutput) != "" {
+		if err := preflightLocalOutputPath("lease output", strings.TrimSpace(*leaseOutput), false); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(*emitProof) != "" {
+		if strings.TrimSpace(*leaseOutput) != "" {
+			samePath, err := sameLocalOutputPath(strings.TrimSpace(*leaseOutput), strings.TrimSpace(*emitProof))
+			if err != nil {
+				return err
+			}
+			if samePath {
+				return exit(2, "lease output and emit proof paths must be different")
+			}
+		}
 		if err := preflightProofOutputPath(strings.TrimSpace(*emitProof), *captureStdout, *captureStderr, downloads); err != nil {
 			return err
 		}
@@ -359,6 +374,11 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(*leaseOutput) != "" && !backend.Spec().Features.Has(FeatureRunSession) {
+		// TODO: Let other reusable delegated providers populate RunResult.Session
+		// and advertise FeatureRunSession once their lifecycle contract is covered.
+		return exit(2, "--lease-output is not supported for provider=%s yet", backend.Spec().Name)
+	}
 	options := leaseOptionsFromConfig(cfg)
 	scriptRequested := *scriptPath != "" || *scriptStdin
 	runReq := RunRequest{
@@ -409,6 +429,12 @@ func (a App) runCommand(ctx context.Context, args []string) (err error) {
 		result, runErr := delegated.Run(ctx, runReq)
 		if runErr == nil || result.Command > 0 || result.Total > 0 {
 			a.syncExternalRunnersBestEffort(ctx, cfg, backend)
+		}
+		if err := writeRunLeaseOutput(strings.TrimSpace(*leaseOutput), result.Session); err != nil {
+			if runErr == nil {
+				return err
+			}
+			fmt.Fprintf(a.Stderr, "warning: lease output failed: %v\n", err)
 		}
 		if runErr == nil && strings.TrimSpace(*emitProof) != "" {
 			proof, err := writeDelegatedRunProof(strings.TrimSpace(*emitProof), strings.TrimSpace(*proofTemplate), cfg, result, runReq)
@@ -1342,6 +1368,16 @@ afterSync:
 		return recordFailure(ExitError{Code: code, Message: fmt.Sprintf("remote command exited %d", code)})
 	}
 	return nil
+}
+
+func writeRunLeaseOutput(path string, session *RunSessionHandle) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if session == nil {
+		return exit(2, "--lease-output was requested but provider did not return a session handle")
+	}
+	return writeJSONFile(path, session)
 }
 
 type countingWriteCloser struct {

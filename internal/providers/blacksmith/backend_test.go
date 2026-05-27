@@ -435,6 +435,87 @@ func TestBlacksmithOneShotRunRemovesClaimAfterStop(t *testing.T) {
 	}
 }
 
+func TestBlacksmithKeptRunWritesLeaseOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	runner := &blacksmithFuncRunner{fn: func(req LocalCommandRequest) (LocalCommandResult, error) {
+		if len(req.Args) >= 3 && req.Args[0] == "testbox" && req.Args[1] == "warmup" {
+			return LocalCommandResult{Stdout: "ready tbx_kept123\n"}, nil
+		}
+		if len(req.Args) >= 3 && req.Args[0] == "testbox" && req.Args[1] == "run" {
+			if req.Stdout != nil {
+				_, _ = req.Stdout.Write([]byte("https://github.com/example-org/my-app/actions/runs/987654321\n"))
+			}
+			return LocalCommandResult{}, nil
+		}
+		return LocalCommandResult{}, nil
+	}}
+
+	cfg := baseConfig()
+	cfg.Blacksmith.Workflow = ".github/workflows/testbox.yml"
+	backend := newTestBlacksmithBackend(cfg, runner)
+	result, err := backend.Run(context.Background(), RunRequest{
+		Repo:    Repo{Root: "/repo"},
+		Command: []string{"npm", "test"},
+		Keep:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("blacksmith calls=%d, want list/warmup/run without stop: %#v", len(runner.calls), runner.calls)
+	}
+	if result.Session == nil {
+		t.Fatal("missing session handle")
+	}
+	got := result.Session
+	if got.Provider != blacksmithTestboxProvider || got.LeaseID != "tbx_kept123" || got.Slug == "" || got.Reused || !got.Kept {
+		t.Fatalf("lease output=%#v", got)
+	}
+	if got.ActionsURL != "https://github.com/example-org/my-app/actions/runs/987654321" || got.RunID != "987654321" {
+		t.Fatalf("actions fields=%#v", got)
+	}
+	if got.CleanupCommand != "crabbox stop --provider blacksmith-testbox tbx_kept123" {
+		t.Fatalf("cleanup command=%q", got.CleanupCommand)
+	}
+}
+
+func TestBlacksmithReusedRunWritesLeaseOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	runner := &blacksmithFuncRunner{fn: func(req LocalCommandRequest) (LocalCommandResult, error) {
+		if len(req.Args) >= 3 && req.Args[0] == "testbox" && req.Args[1] == "run" {
+			return LocalCommandResult{}, nil
+		}
+		return LocalCommandResult{}, nil
+	}}
+
+	cfg := baseConfig()
+	backend := newTestBlacksmithBackend(cfg, runner)
+	result, err := backend.Run(context.Background(), RunRequest{
+		Repo:    Repo{Root: "/repo"},
+		ID:      "tbx_reuse123",
+		Command: []string{"npm", "run", "smoke"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("blacksmith calls=%d, want run only: %#v", len(runner.calls), runner.calls)
+	}
+	if result.Session == nil {
+		t.Fatal("missing session handle")
+	}
+	got := result.Session
+	if got.Provider != blacksmithTestboxProvider || got.LeaseID != "tbx_reuse123" || !got.Reused || !got.Kept {
+		t.Fatalf("lease output=%#v", got)
+	}
+}
+
 func TestBlacksmithRunTimingJSONIncludesCommandPhases(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -583,7 +664,7 @@ func TestBlacksmithKeepOnFailureKeepsTestboxAndWritesBundle(t *testing.T) {
 		cfg:  cfg,
 		rt:   Runtime{Stdout: io.Discard, Stderr: &stderr, Clock: testClock{}, Exec: runner},
 	}
-	_, err := backend.Run(context.Background(), RunRequest{
+	result, err := backend.Run(context.Background(), RunRequest{
 		Repo:          Repo{Root: "/repo"},
 		Command:       []string{"false"},
 		KeepOnFailure: true,
@@ -594,6 +675,9 @@ func TestBlacksmithKeepOnFailureKeepsTestboxAndWritesBundle(t *testing.T) {
 	}
 	if len(runner.calls) != 3 {
 		t.Fatalf("blacksmith calls=%d want list/warmup/run without stop: %#v", len(runner.calls), runner.calls)
+	}
+	if result.Session == nil || !result.Session.Kept {
+		t.Fatalf("session=%#v, want kept after keep-on-failure", result.Session)
 	}
 	got := stderr.String()
 	if !strings.Contains(got, "failure-bundle local=") || !strings.Contains(got, "keep-on-failure: kept lease=tbx_keepfail") {
