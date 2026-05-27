@@ -414,6 +414,36 @@ describe("aws provider", () => {
         "aws RunInstances: http 400: InvalidParameterCombination: The instance type c7a.48xlarge is not eligible for Free Tier",
       ),
     ).toBe("policy");
+    expect(
+      awsProvisioningErrorCategory(
+        'aws RunInstances: http 400: <?xml version="1.0" encoding="UTF-8"?>',
+      ),
+    ).toBe("capacity");
+    expect(
+      isRetryableAWSProvisioningError(
+        'aws RunInstances: http 400: <?xml version="1.0" encoding="UTF-8"?>',
+      ),
+    ).toBe(true);
+    expect(
+      awsProvisioningErrorCategory(
+        'aws AuthorizeSecurityGroupIngress: http 400: <?xml version="1.0" encoding="UTF-8"?>',
+      ),
+    ).toBe("capacity");
+    expect(
+      isRetryableAWSProvisioningError(
+        'aws AuthorizeSecurityGroupIngress: http 400: <?xml version="1.0" encoding="UTF-8"?>',
+      ),
+    ).toBe(true);
+    expect(
+      awsProvisioningErrorCategory(
+        'aws RunInstances: http 400: <?xml version="1.0" encoding="UTF-8"?><Response><Errors><Error><Code>VcpuLimitExceeded</Code><Message>quota</Message></Error></Errors></Response>',
+      ),
+    ).toBe("quota");
+    expect(
+      awsProvisioningErrorCategory(
+        'aws RunInstances: http 400: <?xml version="1.0" encoding="UTF-8"?><Response><Errors><Error><Code>InvalidGroup.NotFound</Code><Message>missing</Message></Error></Errors></Response>',
+      ),
+    ).toBe("");
     expect(awsProvisioningErrorCategory("InsufficientInstanceCapacity: nope")).toBe("capacity");
     expect(awsProvisioningErrorCategory("VcpuLimitExceeded: nope")).toBe("quota");
   });

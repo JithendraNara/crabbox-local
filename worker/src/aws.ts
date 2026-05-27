@@ -2124,6 +2124,9 @@ export function awsProvisioningErrorCategory(message: string): string {
   ) {
     return "policy";
   }
+  if (/^aws [A-Za-z]+: http 400: <\?xml version="1\.0" encoding="UTF-8"\?>\s*$/.test(message)) {
+    return "capacity";
+  }
   return "";
 }
 
