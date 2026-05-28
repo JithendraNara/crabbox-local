@@ -22,6 +22,9 @@ type azureDynamicSessionsBackend struct {
 func (b *azureDynamicSessionsBackend) Spec() ProviderSpec { return b.spec }
 
 func (b *azureDynamicSessionsBackend) Warmup(ctx context.Context, req WarmupRequest) error {
+	if req.ActionsRunner {
+		return exit(2, "--actions-runner is not supported for provider=%s", providerName)
+	}
 	started := b.now()
 	client, err := newAzureDynamicSessionsClient(ctx, b.cfg, b.rt)
 	if err != nil {
@@ -290,6 +293,11 @@ func (b *azureDynamicSessionsBackend) Stop(ctx context.Context, req StopRequest)
 		return err
 	}
 	if err := client.DeleteSession(ctx, leaseID); err != nil {
+		if isNotFoundError(err) {
+			removeLeaseClaim(leaseID)
+			fmt.Fprintf(b.rt.Stderr, "removed stale claim for missing session=%s\n", leaseID)
+			return nil
+		}
 		return providerError("delete session", err)
 	}
 	removeLeaseClaim(leaseID)

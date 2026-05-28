@@ -91,6 +91,43 @@ func TestRunReusesClaimWithoutStoppingSession(t *testing.T) {
 	}
 }
 
+func TestWarmupRejectsActionsRunner(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	fake := &recordingAzureDynamicSessionsAPI{}
+	restoreAzureDynamicSessionsClient(t, fake)
+	backend := testAzureDynamicSessionsBackend()
+
+	err := backend.Warmup(context.Background(), WarmupRequest{
+		Repo:          Repo{Root: t.TempDir(), Name: "repo"},
+		ActionsRunner: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--actions-runner is not supported") {
+		t.Fatalf("err = %v, want actions-runner rejection", err)
+	}
+	if fake.checkRunnerCalls != 0 {
+		t.Fatalf("CheckRunner calls = %d, want 0", fake.checkRunnerCalls)
+	}
+}
+
+func TestStopRemovesStaleClaimWhenSessionIsGone(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := claimLeaseForRepoProvider("azds-stale", "stale-session", providerName, t.TempDir(), time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	fake := &recordingAzureDynamicSessionsAPI{
+		deleteErr: &azureDynamicSessionsAPIError{StatusCode: 404, Status: "404 Not Found"},
+	}
+	restoreAzureDynamicSessionsClient(t, fake)
+	backend := testAzureDynamicSessionsBackend()
+
+	if err := backend.Stop(context.Background(), StopRequest{ID: "stale-session"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := resolveLeaseClaimForProvider("stale-session", providerName); err != nil || ok {
+		t.Fatalf("claim after stale stop ok=%t err=%v", ok, err)
+	}
+}
+
 func TestResolveSessionIDRequiresLocalClaim(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	backend := &azureDynamicSessionsBackend{}
@@ -131,13 +168,16 @@ func TestResolveSessionIDUsesClaimedSlug(t *testing.T) {
 }
 
 type recordingAzureDynamicSessionsAPI struct {
-	getSessionCalls int
-	deleted         []string
-	execs           []azureDynamicSessionsExecRequest
-	commandExit     int
+	checkRunnerCalls int
+	getSessionCalls  int
+	deleted          []string
+	execs            []azureDynamicSessionsExecRequest
+	commandExit      int
+	deleteErr        error
 }
 
 func (r *recordingAzureDynamicSessionsAPI) CheckRunner(context.Context, string) error {
+	r.checkRunnerCalls++
 	return nil
 }
 
@@ -164,6 +204,9 @@ func (r *recordingAzureDynamicSessionsAPI) ListSessions(context.Context) ([]azur
 
 func (r *recordingAzureDynamicSessionsAPI) DeleteSession(_ context.Context, identifier string) error {
 	r.deleted = append(r.deleted, identifier)
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
 	return nil
 }
 
