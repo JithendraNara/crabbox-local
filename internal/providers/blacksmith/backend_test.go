@@ -151,6 +151,23 @@ func TestBlacksmithWarmupArgsPrefersExplicitConfigOverGenericActionsConfig(t *te
 	}
 }
 
+func TestBlacksmithWarmupArgsExplicitWorkflowCanInheritActionsJobAndRef(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Actions.Workflow = ".github/workflows/crabbox.yml"
+	cfg.Actions.Job = "check"
+	cfg.Actions.Ref = "trunk"
+	cfg.Blacksmith.Workflow = ".github/workflows/testbox.yml"
+	got, err := blacksmithWarmupArgs(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".github/workflows/testbox.yml", "--job", "check", "--ref", "trunk"} {
+		if !containsString(got, want) {
+			t.Fatalf("args missing %q: %#v", want, got)
+		}
+	}
+}
+
 func TestBlacksmithWarmupArgsRequiresWorkflow(t *testing.T) {
 	cfg := baseConfig()
 	_, err := blacksmithWarmupArgs(cfg, "")

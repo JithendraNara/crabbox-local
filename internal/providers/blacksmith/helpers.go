@@ -182,7 +182,7 @@ func blacksmithJob(cfg Config) string {
 	if cfg.Blacksmith.Job != "" {
 		return cfg.Blacksmith.Job
 	}
-	if cfg.Blacksmith.Workflow == "" && blacksmithCanFallbackToActionsWorkflow(cfg) {
+	if blacksmithCanFallbackToActionsField(cfg) {
 		return cfg.Actions.Job
 	}
 	return ""
@@ -192,10 +192,14 @@ func blacksmithRef(cfg Config) string {
 	if cfg.Blacksmith.Ref != "" {
 		return cfg.Blacksmith.Ref
 	}
-	if cfg.Blacksmith.Workflow == "" && blacksmithCanFallbackToActionsWorkflow(cfg) {
+	if blacksmithCanFallbackToActionsField(cfg) {
 		return cfg.Actions.Ref
 	}
 	return ""
+}
+
+func blacksmithCanFallbackToActionsField(cfg Config) bool {
+	return strings.TrimSpace(cfg.Blacksmith.Workflow) != "" || blacksmithCanFallbackToActionsWorkflow(cfg)
 }
 
 func blacksmithCanFallbackToActionsWorkflow(cfg Config) bool {
