@@ -267,10 +267,13 @@ Azure does not provision macOS through this provider. Use [AWS](aws.md) or
   resource name stable and derives a shorter Windows `computerName`.
 - The first acquire in an empty subscription pays the cost of creating the shared
   resource group, vnet, and NSG. Later acquires only create per-lease resources.
-- Shared Azure network resources are regional. Single-region leases use the
-  configured `azure.vnet`/`azure.nsg` names. Multi-region fallback appends the
-  region to those names (for example `crabbox-vnet-westeurope`), so one managed
-  resource group can hold fallback networks safely.
+- Shared Azure network resources are regional. Leases use the configured
+  `azure.vnet`/`azure.nsg` names when they match the target region. If a
+  Crabbox-managed VNet or NSG with that base name already exists in another
+  region, Crabbox automatically uses region-scoped names such as
+  `crabbox-vnet-westeurope`. Multi-region fallback also uses region-scoped
+  shared network names, so one managed resource group can hold fallback networks
+  safely.
 - If you already have a resource group / vnet / NSG with the configured names,
   Crabbox refuses to mutate them unless they carry the `managed_by=crabbox` tag.
   Tag them to adopt, choose different names in `azure.*` config, or let Crabbox
