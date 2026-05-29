@@ -890,7 +890,10 @@ export function awsARM64InstanceTypeCandidatesForClass(machineClass: string): st
 
 export function awsInstanceTypeIsARM64(instanceType: string): boolean {
   const family = instanceType.trim().toLowerCase().split(".")[0] ?? "";
-  return /[0-9]+g[dn]?$/.test(family);
+  if (["a1", "g5g", "hpc7g", "i4g", "im4gn", "is4gen", "t4g", "x2gd"].includes(family)) {
+    return true;
+  }
+  return /^[cmr][0-9]+g[dn]?$/.test(family);
 }
 
 function clampTTL(ttlSeconds: number): number {

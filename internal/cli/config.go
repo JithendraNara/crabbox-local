@@ -3462,7 +3462,32 @@ func awsARM64InstanceTypeCandidatesForClass(class string) []string {
 
 func awsInstanceTypeIsARM64(instanceType string) bool {
 	name := strings.ToLower(strings.SplitN(instanceType, ".", 2)[0])
-	return strings.HasSuffix(name, "g") || strings.HasSuffix(name, "gd") || strings.HasSuffix(name, "gn")
+	switch name {
+	case "a1", "g5g", "hpc7g", "i4g", "im4gn", "is4gen", "t4g", "x2gd":
+		return true
+	}
+	for _, prefix := range []string{"c", "m", "r"} {
+		if strings.HasPrefix(name, prefix) && awsGravitonFamilySuffix(strings.TrimPrefix(name, prefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+func awsGravitonFamilySuffix(value string) bool {
+	digitEnd := 0
+	for digitEnd < len(value) && value[digitEnd] >= '0' && value[digitEnd] <= '9' {
+		digitEnd++
+	}
+	if digitEnd == 0 {
+		return false
+	}
+	switch value[digitEnd:] {
+	case "g", "gd", "gn":
+		return true
+	default:
+		return false
+	}
 }
 
 func getenv(name, fallback string) string {

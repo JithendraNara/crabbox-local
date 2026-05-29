@@ -1190,16 +1190,30 @@ func TestAWSARM64ServerTypeForConfig(t *testing.T) {
 }
 
 func TestAWSExplicitARM64TypeInference(t *testing.T) {
-	for _, serverType := range []string{"c7g.16xlarge", "c7gd.16xlarge", "c7gn.16xlarge"} {
-		cfg := Config{
-			Provider:     "aws",
-			TargetOS:     targetLinux,
-			Architecture: ArchitectureAMD64,
-			ServerType:   serverType,
-		}
-		if got := effectiveArchitectureForConfig(cfg); got != ArchitectureARM64 {
-			t.Fatalf("effectiveArchitectureForConfig(%q)=%q want arm64", serverType, got)
-		}
+	tests := map[string]string{
+		"a1.large":        ArchitectureARM64,
+		"c7g.16xlarge":    ArchitectureARM64,
+		"c7gd.16xlarge":   ArchitectureARM64,
+		"c7gn.16xlarge":   ArchitectureARM64,
+		"g5g.xlarge":      ArchitectureARM64,
+		"hpc7g.16xlarge":  ArchitectureARM64,
+		"im4gn.16xlarge":  ArchitectureARM64,
+		"is4gen.16xlarge": ArchitectureARM64,
+		"c7a.16xlarge":    ArchitectureAMD64,
+		"g5.xlarge":       ArchitectureAMD64,
+	}
+	for serverType, want := range tests {
+		t.Run(serverType, func(t *testing.T) {
+			cfg := Config{
+				Provider:     "aws",
+				TargetOS:     targetLinux,
+				Architecture: ArchitectureAMD64,
+				ServerType:   serverType,
+			}
+			if got := effectiveArchitectureForConfig(cfg); got != want {
+				t.Fatalf("effectiveArchitectureForConfig(%q)=%q want %q", serverType, got, want)
+			}
+		})
 	}
 }
 

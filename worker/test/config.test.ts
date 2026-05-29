@@ -386,13 +386,24 @@ describe("lease config", () => {
   });
 
   it("infers AWS ARM architecture from explicit Graviton instance types", () => {
-    const config = leaseConfig({
-      provider: "aws",
-      serverType: "c7g.16xlarge",
-      sshPublicKey: "ssh-ed25519 test",
-    });
-    expect(config.architecture).toBe("arm64");
-    expect(config.serverType).toBe("c7g.16xlarge");
+    for (const serverType of [
+      "a1.large",
+      "c7g.16xlarge",
+      "c7gd.16xlarge",
+      "c7gn.16xlarge",
+      "g5g.xlarge",
+      "hpc7g.16xlarge",
+      "im4gn.16xlarge",
+      "is4gen.16xlarge",
+    ]) {
+      const config = leaseConfig({
+        provider: "aws",
+        serverType,
+        sshPublicKey: "ssh-ed25519 test",
+      });
+      expect(config.architecture).toBe("arm64");
+      expect(config.serverType).toBe(serverType);
+    }
   });
 
   it("rejects ARM leases outside supported Linux providers", () => {
