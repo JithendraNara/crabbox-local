@@ -75,6 +75,8 @@ limits:
     "maxActiveLeases": 0,
     "maxActiveLeasesPerOwner": 0,
     "maxActiveLeasesPerOrg": 0,
+    "capacityAdminOwners": [],
+    "maxActiveLeasesPerCapacityAdmin": 0,
     "maxMonthlyUSD": 0,
     "maxMonthlyUSDPerOwner": 0,
     "maxMonthlyUSDPerOrg": 0
@@ -125,6 +127,8 @@ The `limits` block mirrors the broker's active cost guardrails, read from these 
 CRABBOX_MAX_ACTIVE_LEASES
 CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER
 CRABBOX_MAX_ACTIVE_LEASES_PER_ORG
+CRABBOX_CAPACITY_ADMIN_OWNERS
+CRABBOX_MAX_ACTIVE_LEASES_PER_CAPACITY_ADMIN
 CRABBOX_MAX_MONTHLY_USD
 CRABBOX_MAX_MONTHLY_USD_PER_OWNER
 CRABBOX_MAX_MONTHLY_USD_PER_ORG

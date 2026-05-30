@@ -373,15 +373,18 @@ Recommended limits for a small installation:
 ```text
 CRABBOX_MAX_ACTIVE_LEASES=2
 CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER=1
+CRABBOX_CAPACITY_ADMIN_OWNERS=alice@example.com,bob@example.com
+CRABBOX_MAX_ACTIVE_LEASES_PER_CAPACITY_ADMIN=4
 CRABBOX_MAX_MONTHLY_USD=25
 CRABBOX_MAX_MONTHLY_USD_PER_OWNER=10
 ```
 
 Per-org caps (`CRABBOX_MAX_ACTIVE_LEASES_PER_ORG`,
-`CRABBOX_MAX_MONTHLY_USD_PER_ORG`) are also available. Over-limit lease creation
-returns HTTP 429 `cost_limit_exceeded`. Cost is the hourly rate
-(`CRABBOX_COST_RATES_JSON` override -> provider live price -> built-in defaults)
-times TTL; see [Cost And Usage](features/cost-usage.md).
+`CRABBOX_MAX_MONTHLY_USD_PER_ORG`) and elevated capacity-admin owner caps are
+also available. Over-limit lease creation returns HTTP 429
+`cost_limit_exceeded`. Cost is the hourly rate (`CRABBOX_COST_RATES_JSON`
+override -> provider live price -> built-in defaults) times TTL; see
+[Cost And Usage](features/cost-usage.md).
 
 After deployment, point the CLI at the broker:
 

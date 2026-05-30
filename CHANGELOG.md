@@ -5,6 +5,7 @@
 ### Added
 
 - Added `--arch arm64` / `architecture: arm64` for Linux ARM leases on Azure and AWS, including Azure Dpsv6/Dpdsv6 and AWS Graviton class fallback plus matching Ubuntu ARM64 image resolution.
+- Added configurable capacity-admin owner caps for coordinators that need elevated active lease limits for trusted operators.
 
 ### Fixed
 

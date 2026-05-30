@@ -89,6 +89,9 @@ budgets default to `off` when their environment variable is unset or non-positiv
 CRABBOX_MAX_ACTIVE_LEASES            fleet-wide active lease cap
 CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER  per-owner active lease cap
 CRABBOX_MAX_ACTIVE_LEASES_PER_ORG    per-org active lease cap
+CRABBOX_CAPACITY_ADMIN_OWNERS        comma-separated owners with an elevated active lease cap
+CRABBOX_MAX_ACTIVE_LEASES_PER_CAPACITY_ADMIN
+                                      per-owner active lease cap for capacity admins
 CRABBOX_MAX_MONTHLY_USD              fleet-wide monthly reserved-USD budget
 CRABBOX_MAX_MONTHLY_USD_PER_OWNER    per-owner monthly reserved-USD budget
 CRABBOX_MAX_MONTHLY_USD_PER_ORG      per-org monthly reserved-USD budget

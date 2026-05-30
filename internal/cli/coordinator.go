@@ -521,12 +521,14 @@ type CoordinatorUsageGroup struct {
 }
 
 type CoordinatorCostLimits struct {
-	MaxActiveLeases         int     `json:"maxActiveLeases"`
-	MaxActiveLeasesPerOwner int     `json:"maxActiveLeasesPerOwner"`
-	MaxActiveLeasesPerOrg   int     `json:"maxActiveLeasesPerOrg"`
-	MaxMonthlyUSD           float64 `json:"maxMonthlyUSD"`
-	MaxMonthlyUSDPerOwner   float64 `json:"maxMonthlyUSDPerOwner"`
-	MaxMonthlyUSDPerOrg     float64 `json:"maxMonthlyUSDPerOrg"`
+	MaxActiveLeases                 int      `json:"maxActiveLeases"`
+	MaxActiveLeasesPerOwner         int      `json:"maxActiveLeasesPerOwner"`
+	MaxActiveLeasesPerOrg           int      `json:"maxActiveLeasesPerOrg"`
+	CapacityAdminOwners             []string `json:"capacityAdminOwners,omitempty"`
+	MaxActiveLeasesPerCapacityAdmin int      `json:"maxActiveLeasesPerCapacityAdmin,omitempty"`
+	MaxMonthlyUSD                   float64  `json:"maxMonthlyUSD"`
+	MaxMonthlyUSDPerOwner           float64  `json:"maxMonthlyUSDPerOwner"`
+	MaxMonthlyUSDPerOrg             float64  `json:"maxMonthlyUSDPerOrg"`
 }
 
 type CoordinatorID string
