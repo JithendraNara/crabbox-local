@@ -715,8 +715,10 @@ func (c *AzureClient) createServerWithFallbackInLocation(ctx context.Context, cf
 		if i > 0 && logf != nil {
 			logf("fallback provisioning type=%s after quota/capacity rejection\n", vmSize)
 		}
-		if _, err := c.validatedAzureOSDiskMode(ctx, next); err != nil {
-			return Server{}, next, err
+		if next.AzureSnapshot == "" {
+			if _, err := c.validatedAzureOSDiskMode(ctx, next); err != nil {
+				return Server{}, next, err
+			}
 		}
 		if !sharedInfraReady {
 			if err := c.EnsureSharedInfra(ctx); err != nil {
@@ -741,8 +743,10 @@ func (c *AzureClient) createServerWithFallbackInLocation(ctx context.Context, cf
 			if logf != nil {
 				logf("fallback provisioning type=%s market=on-demand after spot rejection\n", vmSize)
 			}
-			if _, err := c.validatedAzureOSDiskMode(ctx, next); err != nil {
-				return Server{}, next, err
+			if next.AzureSnapshot == "" {
+				if _, err := c.validatedAzureOSDiskMode(ctx, next); err != nil {
+					return Server{}, next, err
+				}
 			}
 			if !sharedInfraReady {
 				if err := c.EnsureSharedInfra(ctx); err != nil {
@@ -778,6 +782,9 @@ func azureProvisioningCandidatesForConfig(cfg Config) []string {
 }
 
 func azureCanPrependNonExplicitServerType(cfg Config) bool {
+	if cfg.AzureSnapshot != "" {
+		return true
+	}
 	mode, err := NormalizeAzureOSDiskMode(cfg.AzureOSDisk)
 	if err != nil {
 		return true

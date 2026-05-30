@@ -258,9 +258,11 @@ export class AzureClient {
     let infra: AzureSharedInfraNames | undefined;
     for (const vmSize of candidates) {
       const nextConfig = { ...config, serverType: vmSize };
-      // Validate preview-only OS disk requirements before allocating network resources.
-      // oxlint-disable-next-line eslint/no-await-in-loop -- SKU fallback must stay sequential.
-      await this.validateOSDiskMode(nextConfig, location);
+      if (!nextConfig.azureSnapshot) {
+        // Validate preview-only OS disk requirements before allocating network resources.
+        // oxlint-disable-next-line eslint/no-await-in-loop -- SKU fallback must stay sequential.
+        await this.validateOSDiskMode(nextConfig, location);
+      }
       try {
         if (!infra) {
           // oxlint-disable-next-line eslint/no-await-in-loop -- shared infra is created once, after config validation.
@@ -291,8 +293,10 @@ export class AzureClient {
           capacityMarket: "on-demand",
           serverType: vmSize,
         };
-        // oxlint-disable-next-line eslint/no-await-in-loop -- market fallback must preserve ordered capacity preference.
-        await this.validateOSDiskMode(nextConfig, location);
+        if (!nextConfig.azureSnapshot) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- market fallback must preserve ordered capacity preference.
+          await this.validateOSDiskMode(nextConfig, location);
+        }
         try {
           if (!infra) {
             // oxlint-disable-next-line eslint/no-await-in-loop -- shared infra is created once, after config validation.
@@ -727,7 +731,7 @@ export class AzureClient {
     await this.arm(
       "PUT",
       vmPath(this.resourceGroup, name),
-      azureComputeAPIVersionForOSDisk(config.azureOSDisk),
+      azureComputeAPIVersionForOSDisk(config.azureSnapshot ? "managed" : config.azureOSDisk),
       {
         location,
         tags,
@@ -1410,17 +1414,18 @@ function azureProvisioningCandidatesForConfig(config: LeaseConfig): string[] {
   if (config.serverTypeExplicit && config.serverType) {
     return [config.serverType];
   }
+  const azureOSDisk = config.azureSnapshot ? "managed" : config.azureOSDisk;
   const candidates = azureVMSizeCandidatesForTargetClass(
     config.target,
     config.class,
     config.windowsMode,
     config.architecture,
-    config.azureOSDisk,
+    azureOSDisk,
   );
   if (!config.serverType || config.serverType === candidates[0]) {
     return candidates;
   }
-  if (azureOSDiskUsesFullCaching(config.azureOSDisk)) {
+  if (azureOSDiskUsesFullCaching(azureOSDisk)) {
     return azureSupportsEphemeralFullCaching(config.serverType)
       ? prependUnique(config.serverType, candidates)
       : candidates;

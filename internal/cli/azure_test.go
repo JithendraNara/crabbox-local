@@ -215,6 +215,13 @@ func TestAzureProvisioningCandidatesSkipsStaleEphemeralPreviewDefault(t *testing
 	if !reflect.DeepEqual(got, []string{"Standard_D2ads_v6"}) {
 		t.Fatalf("explicit candidate=%v, want exact unsupported type preserved", got)
 	}
+
+	cfg.ServerTypeExplicit = false
+	cfg.AzureSnapshot = "snapshot-id"
+	got = azureProvisioningCandidatesForConfig(cfg)
+	if got[0] != "Standard_D2ads_v6" {
+		t.Fatalf("snapshot-backed first candidate=%q, want stale managed-disk type preserved; all=%v", got[0], got)
+	}
 }
 
 func TestAzureWindowsVMSizeCandidatesForClass(t *testing.T) {

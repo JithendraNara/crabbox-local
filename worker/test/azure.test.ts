@@ -989,15 +989,24 @@ describe("azure provider", () => {
   it("installs an SSH key extension when forking Linux VMs from OS disk snapshots", async () => {
     const client = new AzureClient(baseEnv);
     const bodies: unknown[] = [];
+    const vmAPIVersions: string[] = [];
     const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
-      const pathname = new URL(url).pathname;
+      const parsedURL = new URL(url);
+      const pathname = parsedURL.pathname;
       if (isAzureLoginURL(url)) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), { status: 200 }),
         );
       }
       if (init?.body) bodies.push(JSON.parse(String(init.body)));
+      if (
+        pathname.includes("/virtualMachines/crabbox-blue-lobster") &&
+        !pathname.includes("/extensions/") &&
+        init?.method === "PUT"
+      ) {
+        vmAPIVersions.push(parsedURL.searchParams.get("api-version") ?? "");
+      }
       if (pathname.endsWith("/resourceGroups/crabbox-leases")) {
         return Promise.resolve(
           new Response(JSON.stringify({ tags: { managed_by: "crabbox" } }), { status: 200 }),
@@ -1049,7 +1058,10 @@ describe("azure provider", () => {
       testLeaseConfig({
         azureSnapshot:
           "/subscriptions/sub/resourceGroups/crabbox-leases/providers/Microsoft.Compute/snapshots/checkpoint-azure",
+        azureOSDisk: "ephemeral-preview",
         capacityMarket: "on-demand",
+        serverType: "Standard_D2ads_v6",
+        serverTypeExplicit: false,
         sshPublicKey: "ssh-ed25519 snapshot-key",
       }),
       "cbx_123456789abc",
@@ -1072,6 +1084,7 @@ describe("azure provider", () => {
         type: "CustomScript",
       },
     });
+    expect(vmAPIVersions).toEqual(["2024-07-01"]);
     expect(JSON.stringify(extensionBody)).toContain("ssh-ed25519 snapshot-key");
   });
 
