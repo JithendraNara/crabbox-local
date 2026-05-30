@@ -11,6 +11,7 @@
 
 - Fixed brokered lease creation diagnostics so long coordinator requests print progress, timed-out create requests do not retry non-idempotent POSTs through curl, and Azure ARM errors preserve the useful conflict message.
 - Fixed brokered Azure Linux lease creation so a stalled coordinator request times out with a concrete cleanup/retry hint instead of sitting silently in the leasing phase for the full coordinator HTTP timeout.
+- Fixed brokered Azure Spot VM fallback so `on-demand-after-*` windows bound VM create waits, on-demand retries use separate VM names, and timed-out Spot cleanup is retried from Fleet maintenance.
 
 ## 0.22.0 - 2026-05-29
 

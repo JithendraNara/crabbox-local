@@ -15,6 +15,7 @@ const API_VERSIONS = {
 const DELETE_RETRY_ATTEMPTS = 13;
 const DELETE_RETRY_DELAY_MS = 15_000;
 const MIN_LRO_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_AZURE_SPOT_FALLBACK_MS = 120_000;
 const DEFAULT_AZURE_LINUX_IMAGE = "Canonical:ubuntu-26_04-lts:server:latest";
 const DEFAULT_AZURE_LINUX_ARM64_IMAGE = "Canonical:ubuntu-26_04-lts:server-arm64:latest";
 const AZURE_NOBLE_LINUX_IMAGE = "Canonical:ubuntu-24_04-lts:server:latest";
@@ -84,6 +85,13 @@ interface AzureSharedInfraNames {
   nsg: string;
 }
 
+export interface AzureDeferredCleanupRequest {
+  name: string;
+  location: string;
+  resourceGroup: string;
+  createdAt: string;
+}
+
 export class AzureClient {
   private readonly env: Env;
   private readonly tenant: string;
@@ -99,9 +107,20 @@ export class AzureClient {
   readonly defaultLocation: string;
   private cache?: TokenCache;
   private ephemeralOSSupport?: Map<string, boolean>;
+  private readonly deferredCleanup:
+    | ((request: AzureDeferredCleanupRequest) => Promise<void>)
+    | undefined;
   fetcher: typeof fetch = (input, init) => fetch(input, init);
 
-  constructor(env: Env, options: { location?: string; vnet?: string; nsg?: string } = {}) {
+  constructor(
+    env: Env,
+    options: {
+      location?: string;
+      vnet?: string;
+      nsg?: string;
+      deferredCleanup?: (request: AzureDeferredCleanupRequest) => Promise<void>;
+    } = {},
+  ) {
     this.env = env;
     if (!env.AZURE_TENANT_ID) throw new Error("AZURE_TENANT_ID secret is required");
     if (!env.AZURE_CLIENT_ID) throw new Error("AZURE_CLIENT_ID secret is required");
@@ -122,6 +141,7 @@ export class AzureClient {
       .filter(Boolean);
     if (this.sshCIDRs.length === 0) this.sshCIDRs.push("0.0.0.0/0");
     this.defaultLocation = options.location || env.CRABBOX_AZURE_LOCATION?.trim() || "eastus";
+    this.deferredCleanup = options.deferredCleanup;
   }
 
   async listCrabboxServers(): Promise<ProviderMachine[]> {
@@ -195,11 +215,20 @@ export class AzureClient {
 
   private clientForLocation(location: string, multiRegion: boolean): AzureClient {
     if (location === this.defaultLocation && !multiRegion) return this;
-    return new AzureClient(this.env, {
+    const options: {
+      location: string;
+      vnet: string;
+      nsg: string;
+      deferredCleanup?: (request: AzureDeferredCleanupRequest) => Promise<void>;
+    } = {
       location,
       vnet: multiRegion ? azureRegionalName(this.vnet, location) : this.vnet,
       nsg: multiRegion ? azureRegionalName(this.nsg, location) : this.nsg,
-    });
+    };
+    if (this.deferredCleanup) {
+      options.deferredCleanup = this.deferredCleanup;
+    }
+    return new AzureClient(this.env, options);
   }
 
   private async createServerWithFallbackInLocation(
@@ -267,6 +296,7 @@ export class AzureClient {
             slug,
             owner,
             infra,
+            `${leaseID}-on-demand`,
           );
           return attempts.length > 0
             ? { server, serverType: vmSize, market: "on-demand", attempts }
@@ -326,6 +356,62 @@ export class AzureClient {
       result,
     );
     return result;
+  }
+
+  private async requestDeleteServer(name: string): Promise<void> {
+    const result = { errors: [] as string[], retry: false };
+    await this.requestDeleteResource(
+      "vm",
+      vmPath(this.resourceGroup, name),
+      API_VERSIONS.compute,
+      result,
+    );
+    await this.requestDeleteResource(
+      "nic",
+      networkPath(this.resourceGroup, "networkInterfaces", `${name}-nic`),
+      API_VERSIONS.network,
+      result,
+    );
+    await this.requestDeleteResource(
+      "pip",
+      networkPath(this.resourceGroup, "publicIPAddresses", `${name}-pip`),
+      API_VERSIONS.network,
+      result,
+    );
+    await this.requestDeleteResource(
+      "disk",
+      `/resourceGroups/${this.resourceGroup}/providers/Microsoft.Compute/disks/${name}-osdisk`,
+      API_VERSIONS.disks,
+      result,
+    );
+    if (result.errors.length > 0) {
+      throw new Error(result.errors.join("; "));
+    }
+  }
+
+  private async requestDeleteResource(
+    kind: string,
+    path: string,
+    apiVersion: string,
+    result: { errors: string[]; retry: boolean },
+  ): Promise<void> {
+    const token = await this.token();
+    const url = `https://management.azure.com/subscriptions/${this.subscription}${path}?api-version=${apiVersion}`;
+    const response = await this.fetcher(url, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (
+      response.ok ||
+      response.status === 202 ||
+      response.status === 204 ||
+      response.status === 404
+    ) {
+      return;
+    }
+    const body = await safeBody(response);
+    result.errors.push(`delete ${kind} ${path}: http ${response.status}: ${body}`);
+    if (isRetryableDeleteError(body)) result.retry = true;
   }
 
   private async deleteResource(
@@ -502,12 +588,27 @@ export class AzureClient {
     slug: string,
     owner: string,
     infra: AzureSharedInfraNames,
+    nameSeed = leaseID,
   ): Promise<ProviderMachine> {
-    const name = leaseProviderName(leaseID, slug);
+    const name = leaseProviderName(nameSeed, slug);
     try {
       return await this.createVMUnchecked(config, location, leaseID, slug, owner, name, infra);
     } catch (error) {
-      await this.deleteServer(name).catch(() => undefined);
+      if (isAzureSpotFallbackTimeout(config, error)) {
+        await this.deferredCleanup?.({
+          name,
+          location: this.defaultLocation,
+          resourceGroup: this.resourceGroup,
+          createdAt: new Date().toISOString(),
+        });
+        await this.requestDeleteServer(name).catch((cleanupError: unknown) => {
+          const message =
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+          console.warn(`azure spot timeout cleanup failed name=${name}: ${message}`);
+        });
+      } else {
+        await this.deleteServer(name).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -607,11 +708,18 @@ export class AzureClient {
       vmProperties["evictionPolicy"] = "Delete";
       vmProperties["billingProfile"] = { maxPrice: -1 };
     }
-    await this.arm("PUT", vmPath(this.resourceGroup, name), API_VERSIONS.compute, {
-      location,
-      tags,
-      properties: vmProperties,
-    });
+    const vmLROTimeoutMs = azureSpotFallbackTimeoutMs(config);
+    await this.arm(
+      "PUT",
+      vmPath(this.resourceGroup, name),
+      API_VERSIONS.compute,
+      {
+        location,
+        tags,
+        properties: vmProperties,
+      },
+      vmLROTimeoutMs === undefined ? undefined : { lroTimeoutMs: vmLROTimeoutMs },
+    );
     if (config.azureSnapshot && config.target !== "windows") {
       await this.installLinuxSSHKeyExtension(location, name, tags, config);
     }
@@ -918,6 +1026,7 @@ export class AzureClient {
     path: string,
     apiVersion: string,
     body?: unknown,
+    opts?: { lroTimeoutMs?: number },
   ): Promise<T> {
     const token = await this.token();
     const url = `https://management.azure.com/subscriptions/${this.subscription}${path}?api-version=${apiVersion}`;
@@ -937,7 +1046,7 @@ export class AzureClient {
     }
     const initialText = await response.text();
     if (response.status === 201 || response.status === 202) {
-      await this.awaitLRO(response, token);
+      await this.awaitLRO(response, token, opts?.lroTimeoutMs);
       if (method === "DELETE") return undefined as T;
       // 201 typically returns the resource in the initial body; 202 returns nothing,
       // so re-GET the resource to read its post-provision state.
@@ -1004,15 +1113,19 @@ export class AzureClient {
     return support;
   }
 
-  private async awaitLRO(response: Response, token: string): Promise<void> {
+  private async awaitLRO(response: Response, token: string, timeoutMs?: number): Promise<void> {
     const asyncURL =
       response.headers.get("azure-asyncoperation") ?? response.headers.get("location");
     if (!asyncURL) return;
     const interval = azureLROPollIntervalMS(response.headers.get("retry-after"));
-    const deadline = Date.now() + 20 * 60_000;
-    while (Date.now() < deadline) {
+    const lroTimeoutMs = timeoutMs && timeoutMs > 0 ? timeoutMs : 20 * 60_000;
+    const deadline = Date.now() + lroTimeoutMs;
+    for (;;) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
       // oxlint-disable-next-line eslint/no-await-in-loop -- LRO must wait between status reads.
-      await sleep(interval);
+      await sleep(Math.min(interval, remainingMs));
+      if (Date.now() >= deadline) break;
       // oxlint-disable-next-line eslint/no-await-in-loop -- LRO polling is sequential.
       const poll = await this.fetcher(asyncURL, {
         headers: { authorization: `Bearer ${token}` },
@@ -1030,7 +1143,11 @@ export class AzureClient {
         throw new Error(`azure LRO ${status}: ${text}`);
       }
     }
-    throw new Error("azure long-running operation timed out");
+    throw new Error(
+      timeoutMs && timeoutMs > 0
+        ? `azure long-running operation timed out after ${Math.round(timeoutMs / 1000)}s`
+        : "azure long-running operation timed out",
+    );
   }
 
   private async token(): Promise<string> {
@@ -1334,6 +1451,7 @@ function azureSameLocation(existing: string | undefined, desired: string): boole
 }
 
 export function azureProvisioningErrorCategory(message: string): string | undefined {
+  if (message.includes("long-running operation timed out")) return "capacity";
   if (message.includes("QuotaExceeded")) return "quota";
   if (
     message.includes("SkuNotAvailable") ||
@@ -1347,6 +1465,32 @@ export function azureProvisioningErrorCategory(message: string): string | undefi
     return "policy";
   }
   return undefined;
+}
+
+export function azureSpotFallbackTimeoutMs(
+  config: Pick<LeaseConfig, "capacityMarket" | "capacityFallback">,
+): number | undefined {
+  if (config.capacityMarket !== "spot") return undefined;
+  const fallback = config.capacityFallback.trim().toLowerCase();
+  if (!fallback.startsWith("on-demand-after-")) return undefined;
+  const duration = fallback.slice("on-demand-after-".length);
+  const match = /^(\d+)(ms|s|m)?$/.exec(duration);
+  if (!match?.[1]) return DEFAULT_AZURE_SPOT_FALLBACK_MS;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_AZURE_SPOT_FALLBACK_MS;
+  const unit = match[2] ?? "s";
+  if (unit === "ms") return value;
+  if (unit === "m") return value * 60_000;
+  return value * 1000;
+}
+
+function isAzureSpotFallbackTimeout(
+  config: Pick<LeaseConfig, "capacityMarket" | "capacityFallback">,
+  error: unknown,
+): boolean {
+  if (azureSpotFallbackTimeoutMs(config) === undefined) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("azure long-running operation timed out after");
 }
 
 export function conciseAzureProvisioningMessage(message: string): string {

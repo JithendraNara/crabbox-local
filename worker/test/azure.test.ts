@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   AzureClient,
@@ -7,6 +7,7 @@ import {
   azureProvisioningErrorCategory,
   azureRegionCandidates,
   azureRegionalName,
+  azureSpotFallbackTimeoutMs,
   azureSupportsEphemeralOS,
   azureTagsFromLabels,
   conciseAzureProvisioningMessage,
@@ -1023,6 +1024,150 @@ describe("azure provider", () => {
     expect(azureLROPollIntervalMS(null)).toBe(15_000);
     expect(azureLROPollIntervalMS("3")).toBe(15_000);
     expect(azureLROPollIntervalMS("30")).toBe(30_000);
+  });
+
+  it("bounds Azure Spot VM LROs by the configured on-demand fallback window", () => {
+    expect(
+      azureSpotFallbackTimeoutMs({
+        capacityMarket: "spot",
+        capacityFallback: "on-demand-after-120s",
+      }),
+    ).toBe(120_000);
+    expect(
+      azureSpotFallbackTimeoutMs({
+        capacityMarket: "spot",
+        capacityFallback: "on-demand-after-2m",
+      }),
+    ).toBe(120_000);
+    expect(
+      azureSpotFallbackTimeoutMs({
+        capacityMarket: "on-demand",
+        capacityFallback: "on-demand-after-120s",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("starts Azure on-demand fallback without waiting for timed-out Spot cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      const cleanupRequests: Array<{ name: string; location: string; resourceGroup: string }> = [];
+      const client = new AzureClient(baseEnv, {
+        deferredCleanup: (request) => {
+          cleanupRequests.push(request);
+          return Promise.resolve();
+        },
+      });
+      const vmPutPaths: string[] = [];
+      let spotCleanupStarted = false;
+      const fakeFetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = typeof input === "string" ? input : input.toString();
+        const pathname = new URL(url).pathname;
+        if (isAzureLoginURL(url)) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ access_token: "tkn", expires_in: 3600 }), {
+              status: 200,
+            }),
+          );
+        }
+        if (url === "https://management.azure.com/spot-op") {
+          return Promise.resolve(new Response(JSON.stringify({ status: "InProgress" })));
+        }
+        if (init?.method === "DELETE" && pathname.includes("/virtualMachines/")) {
+          spotCleanupStarted = true;
+          return Promise.resolve(new Response("", { status: 202 }));
+        }
+        if (pathname.endsWith("/resourceGroups/crabbox-leases")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ tags: { managed_by: "crabbox" } }), { status: 200 }),
+          );
+        }
+        if (pathname.endsWith("/virtualNetworks/crabbox-vnet")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ tags: { managed_by: "crabbox" } }), { status: 200 }),
+          );
+        }
+        if (pathname.endsWith("/networkSecurityGroups/crabbox-nsg") && init?.method === "GET") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                tags: { managed_by: "crabbox" },
+                properties: { securityRules: [] },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (init?.method === "GET" && pathname.includes("/publicIPAddresses/")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ properties: { ipAddress: "192.0.2.10" } }), {
+              status: 200,
+            }),
+          );
+        }
+        if (init?.method === "GET" && pathname.includes("/virtualMachines/")) {
+          const name = pathname.split("/").pop() ?? "crabbox-blue-lobster";
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                name,
+                tags: { crabbox: "true" },
+                properties: {
+                  provisioningState: "Succeeded",
+                  hardwareProfile: { vmSize: "Standard_D2ads_v6" },
+                },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (init?.method === "PUT" && pathname.includes("/virtualMachines/")) {
+          vmPutPaths.push(pathname);
+          const name = pathname.split("/").pop() ?? "crabbox-blue-lobster";
+          if (vmPutPaths.length === 1) {
+            return Promise.resolve(
+              new Response("", {
+                status: 202,
+                headers: { "azure-asyncoperation": "https://management.azure.com/spot-op" },
+              }),
+            );
+          }
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                name,
+                tags: { crabbox: "true" },
+                properties: {
+                  provisioningState: "Succeeded",
+                  hardwareProfile: { vmSize: "Standard_D2ads_v6" },
+                },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      client.fetcher = fakeFetch;
+
+      const create = client.createServerWithFallback(
+        testLeaseConfig({ capacityFallback: "on-demand-after-1ms" }),
+        "cbx_123456789abc",
+        "blue-lobster",
+        "owner",
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await create;
+
+      expect(result.market).toBe("on-demand");
+      expect(cleanupRequests).toMatchObject([
+        { location: "eastus", resourceGroup: "crabbox-leases" },
+      ]);
+      expect(spotCleanupStarted).toBe(true);
+      expect(vmPutPaths).toHaveLength(2);
+      expect(vmPutPaths[1]).not.toBe(vmPutPaths[0]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("drops crabbox-ssh-* rules and preserves operator rules", () => {

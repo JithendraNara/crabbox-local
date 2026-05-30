@@ -9,7 +9,7 @@ import {
   isRetryableAWSProvisioningError,
   type AWSMacHost,
 } from "./aws";
-import { AzureClient } from "./azure";
+import { AzureClient, type AzureDeferredCleanupRequest } from "./azure";
 import {
   awsPromotedAMIConfigKey,
   azureLocationFor,
@@ -97,6 +97,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const awsOrphanSweepRecordKey = "aws-orphan-sweep:last";
 const awsOrphanSweepFirstAlarmKey = "aws-orphan-sweep:first-alarm";
+const azureDeferredCleanupPrefix = "azure-cleanup:";
 
 interface WebVNCTicketRecord {
   ticket: string;
@@ -242,6 +243,13 @@ interface AWSOrphanSweepConfig {
   intervalSeconds: number;
   graceSeconds: number;
   regions: string[];
+}
+
+interface AzureDeferredCleanupRecord extends AzureDeferredCleanupRequest {
+  attempts: number;
+  updatedAt: string;
+  retryAt: string;
+  lastError?: string;
 }
 
 interface AWSOrphanSweepCandidate {
@@ -956,6 +964,7 @@ export class FleetDurableObject implements DurableObject {
 
   private async runMaintenance(): Promise<void> {
     await this.expireLeases();
+    await this.runAzureDeferredCleanups();
     await this.runAWSOrphanSweepIfDue("alarm");
     await this.scheduleAlarm();
   }
@@ -3943,11 +3952,60 @@ export class FleetDurableObject implements DurableObject {
     if (orphanSweepAlarm !== undefined) {
       alarmTimes.push(orphanSweepAlarm);
     }
+    const azureCleanupAlarm = await this.nextAzureDeferredCleanupAlarmTime();
+    if (azureCleanupAlarm !== undefined) {
+      alarmTimes.push(azureCleanupAlarm);
+    }
     if (alarmTimes.length === 0) {
       await this.state.storage.deleteAlarm();
       return;
     }
     await this.state.storage.setAlarm(Math.min(...alarmTimes));
+  }
+
+  private async nextAzureDeferredCleanupAlarmTime(): Promise<number | undefined> {
+    const records = await this.state.storage.list<AzureDeferredCleanupRecord>({
+      prefix: azureDeferredCleanupPrefix,
+    });
+    const times = [...records.values()]
+      .map((record) => Date.parse(record.retryAt))
+      .filter((time) => Number.isFinite(time));
+    if (times.length === 0) {
+      return undefined;
+    }
+    return Math.max(Date.now() + 1000, Math.min(...times));
+  }
+
+  private async runAzureDeferredCleanups(): Promise<void> {
+    const records = await this.state.storage.list<AzureDeferredCleanupRecord>({
+      prefix: azureDeferredCleanupPrefix,
+    });
+    const now = Date.now();
+    await Promise.all(
+      [...records.entries()].map(async ([key, record]) => {
+        const retryAt = Date.parse(record.retryAt);
+        if (Number.isFinite(retryAt) && retryAt > now) {
+          return;
+        }
+        try {
+          await new AzureClient(this.env, { location: record.location }).deleteServer(record.name);
+        } catch (error) {
+          const nextRecord: AzureDeferredCleanupRecord = {
+            ...record,
+            attempts: record.attempts + 1,
+            updatedAt: new Date().toISOString(),
+            retryAt: new Date(now + leaseCleanupRetryDelayMs).toISOString(),
+            lastError: errorMessage(error),
+          };
+          await this.state.storage.put(key, nextRecord);
+          console.warn(
+            `azure deferred cleanup failed name=${record.name} location=${record.location}: ${nextRecord.lastError}`,
+          );
+          return;
+        }
+        await this.state.storage.delete(key);
+      }),
+    );
   }
 
   private async nextAWSOrphanSweepAlarmTime(): Promise<number | undefined> {
@@ -4395,7 +4453,7 @@ export class FleetDurableObject implements DurableObject {
       );
     }
     if (provider === "azure") {
-      return new AzureProvider(this.env);
+      return new AzureProvider(this.env, this.state.storage);
     }
     if (provider === "gcp") {
       return new GCPProvider(this.env, region, project);
@@ -5026,6 +5084,10 @@ function passthroughProviderImage(image: ProviderImage): ProviderImage {
 
 function allowProviderImageDelete(): Promise<undefined> {
   return Promise.resolve(undefined);
+}
+
+function azureDeferredCleanupKey(location: string, name: string): string {
+  return `${azureDeferredCleanupPrefix}${location}:${name}`;
 }
 
 function validCrabboxProviderKey(value: string | undefined): value is string {
@@ -6650,11 +6712,34 @@ class HetznerProvider implements CloudProvider {
 class AzureProvider implements CloudProvider {
   private clientValue?: AzureClient;
 
-  constructor(private readonly env: Env) {}
+  constructor(
+    private readonly env: Env,
+    private readonly storage?: DurableObjectStorage,
+  ) {}
 
   private get client(): AzureClient {
-    this.clientValue ??= new AzureClient(this.env);
+    this.clientValue ??= new AzureClient(this.env, {
+      deferredCleanup: (request) => this.recordDeferredCleanup(request),
+    });
     return this.clientValue;
+  }
+
+  private async recordDeferredCleanup(request: AzureDeferredCleanupRequest): Promise<void> {
+    if (!this.storage) return;
+    const key = azureDeferredCleanupKey(request.location, request.name);
+    const current = await this.storage.get<AzureDeferredCleanupRecord>(key);
+    const now = new Date().toISOString();
+    const record: AzureDeferredCleanupRecord = {
+      ...request,
+      attempts: current?.attempts ?? 0,
+      updatedAt: now,
+      retryAt: now,
+    };
+    if (current?.lastError) {
+      record.lastError = current.lastError;
+    }
+    await this.storage.put(key, record);
+    await this.storage.setAlarm(Date.now() + 1000);
   }
 
   listCrabboxServers(): Promise<ProviderMachine[]> {
