@@ -49,6 +49,9 @@ func (b *backend) Acquire(ctx context.Context, req AcquireRequest) (LeaseTarget,
 	fmt.Fprintf(b.rt.Stderr, "provisioning provider=%s lease=%s slug=%s ttl=%s\n", providerName, leaseID, slug, blank(ttl.String(), "-"))
 	box, err := client.CreateBox(ctx, createRequest{TTL: ttl})
 	if err != nil {
+		if box.ID != "" {
+			_ = client.DeleteBox(context.Background(), box.ID)
+		}
 		return LeaseTarget{}, err
 	}
 	if err := claimLeaseForRepoProviderScope(leaseID, slug, providerName, boxScope(box.ID), req.Repo.Root, cfg.IdleTimeout, req.Reclaim); err != nil {
@@ -408,20 +411,18 @@ func boxSSHTarget(cfg Config, box boxData) (SSHTarget, error) {
 		return SSHTarget{}, exit(5, "ascii-box %s is missing SSH user", box.ID)
 	}
 	return SSHTarget{
-		User:        user,
-		Host:        host,
-		Key:         boxSSHKey(cfg),
-		Port:        "22",
-		TargetOS:    targetLinux,
-		NetworkKind: networkPublic,
-		ReadyCheck:  "command -v git >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null && command -v python3 >/dev/null",
+		User:            user,
+		Host:            host,
+		Key:             boxSSHKey(cfg),
+		Port:            "22",
+		TargetOS:        targetLinux,
+		NetworkKind:     networkPublic,
+		NoControlMaster: true,
+		ReadyCheck:      "command -v git >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null && command -v python3 >/dev/null",
 	}, nil
 }
 
 func boxSSHKey(cfg Config) string {
-	if key := strings.TrimSpace(cfg.SSHKey); key != "" {
-		return expandUserPath(key)
-	}
 	return path.Join(asciiBoxCLIHome(), ".ssh", "ascii_box_ed25519")
 }
 

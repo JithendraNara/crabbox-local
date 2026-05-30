@@ -76,6 +76,12 @@ func (c *client) CreateBox(ctx context.Context, req createRequest) (boxData, err
 	}
 	result, err := c.run(ctx, args...)
 	if err != nil {
+		if partial, parseErr := decodeNewBox(result.Stdout); parseErr == nil && partial.ID != "" {
+			if ready, waitErr := c.waitForBoxReady(ctx, partial); waitErr == nil {
+				return ready, nil
+			}
+			return partial, fmt.Errorf("ascii-box CLI new failed after creating %s: %s", partial.ID, c.formatError(result, err))
+		}
 		return boxData{}, fmt.Errorf("ascii-box CLI new failed: %s", c.formatError(result, err))
 	}
 	box, err := decodeNewBox(result.Stdout)
@@ -84,6 +90,11 @@ func (c *client) CreateBox(ctx context.Context, req createRequest) (boxData, err
 	}
 	if strings.TrimSpace(box.ID) == "" {
 		return boxData{}, fmt.Errorf("ascii-box CLI new response missing box id")
+	}
+	if !boxReadyForSSH(box) {
+		if ready, err := c.waitForBoxReady(ctx, box); err == nil {
+			return ready, nil
+		}
 	}
 	return box, nil
 }
@@ -97,7 +108,7 @@ func (c *client) Check(ctx context.Context) error {
 }
 
 func (c *client) PrepareSSH(ctx context.Context, id string) error {
-	result, err := c.run(ctx, "ssh", id, "--", "true")
+	result, err := c.runWithEnv(ctx, c.sshEnv(), "ssh", id, "--", "true")
 	if err != nil {
 		return fmt.Errorf("ascii-box CLI ssh setup failed: %s", c.formatError(result, err))
 	}
@@ -129,8 +140,17 @@ func (c *client) DeleteBox(ctx context.Context, id string) error {
 }
 
 func (c *client) run(ctx context.Context, args ...string) (LocalCommandResult, error) {
+	return c.runWithEnv(ctx, c.env(), args...)
+}
+
+func (c *client) runWithEnv(ctx context.Context, env []string, args ...string) (LocalCommandResult, error) {
 	if err := c.ensureConfig(ctx); err != nil {
 		return LocalCommandResult{}, err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cliTimeout(args))
+		defer cancel()
 	}
 	argv := []string{"--no-update", "--json"}
 	if c.apiURL != "" {
@@ -140,11 +160,30 @@ func (c *client) run(ctx context.Context, args ...string) (LocalCommandResult, e
 	return c.runner.Run(ctx, LocalCommandRequest{
 		Name: c.cliPath,
 		Args: argv,
-		Env:  c.env(),
+		Env:  env,
 	})
 }
 
+func cliTimeout(args []string) time.Duration {
+	if len(args) == 0 {
+		return 30 * time.Second
+	}
+	switch args[0] {
+	case "new":
+		return 5 * time.Minute
+	case "ssh", "delete", "stop":
+		return 2 * time.Minute
+	default:
+		return 30 * time.Second
+	}
+}
+
 func (c *client) ensureConfig(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	result, err := c.runner.Run(ctx, LocalCommandRequest{
 		Name: c.cliPath,
 		Args: []string{"--no-update", "--json", "config"},
@@ -181,8 +220,44 @@ func (c *client) ensureConfig(ctx context.Context) error {
 	return nil
 }
 
+func (c *client) waitForBoxReady(ctx context.Context, box boxData) (boxData, error) {
+	latest := box
+	deadline := time.NewTimer(5 * time.Minute)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		if boxReadyForSSH(latest) {
+			return latest, nil
+		}
+		if refreshed, err := c.GetBox(ctx, latest.ID); err == nil {
+			latest = mergeBox(latest, refreshed)
+			if boxReadyForSSH(latest) {
+				return latest, nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return latest, ctx.Err()
+		case <-deadline.C:
+			if lastErr != nil {
+				return latest, fmt.Errorf("timed out waiting for ascii-box %s to become ready: %w", latest.ID, lastErr)
+			}
+			return latest, fmt.Errorf("timed out waiting for ascii-box %s to become ready", latest.ID)
+		case <-ticker.C:
+		}
+	}
+}
+
 func (c *client) env() []string {
 	return append(setEnv(os.Environ(), "HOME", c.home), "BOX_API_KEY="+c.apiKey)
+}
+
+func (c *client) sshEnv() []string {
+	return setEnv(c.env(), "SSH_AUTH_SOCK", "")
 }
 
 func (c *client) formatError(result LocalCommandResult, err error) string {

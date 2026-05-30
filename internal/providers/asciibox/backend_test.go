@@ -88,6 +88,33 @@ func TestClientUsesOfficialAsciiBoxCLI(t *testing.T) {
 			t.Fatalf("env missing HOME: %v", env)
 		}
 	}
+	if !hasEnv(runner.env[3], "SSH_AUTH_SOCK=") {
+		t.Fatalf("ssh setup env should disable agent identities: %v", runner.env[3])
+	}
+}
+
+func TestClientPollsPartialCreateOutput(t *testing.T) {
+	home := t.TempDir()
+	runner := &fakeCommandRunner{
+		configPath: home + "/Library/Application Support/ascii/box/config.json",
+		newStdout: strings.Join([]string{
+			`{"event":"created","id":"bx_2","ttlSeconds":1800}`,
+			`{"event":"state","id":"bx_2","state":"provisioning"}`,
+		}, "\n"),
+		newErr:        fmt.Errorf("exit status 1"),
+		infoResponses: []string{`{"box":{"id":"bx_2","state":"ready","ip":"203.0.113.20"}}`},
+	}
+	client := &client{apiKey: "box_key", apiURL: "https://ascii.dev", cliPath: "box", home: home, runner: runner}
+	box, err := client.CreateBox(context.Background(), createRequest{TTL: 30 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.ID != "bx_2" || boxHost(box) != "203.0.113.20" {
+		t.Fatalf("box=%#v", box)
+	}
+	if !containsCommand(runner.commands, "box --no-update --json --api-url https://ascii.dev info bx_2") {
+		t.Fatalf("commands missing info poll: %v", runner.commands)
+	}
 }
 
 func TestAcquireClaimsBoxAndReturnsSSHTarget(t *testing.T) {
@@ -111,6 +138,9 @@ func TestAcquireClaimsBoxAndReturnsSSHTarget(t *testing.T) {
 	}
 	if !strings.HasSuffix(lease.SSH.Key, ".ssh/ascii_box_ed25519") {
 		t.Fatalf("ssh key=%q", lease.SSH.Key)
+	}
+	if !lease.SSH.NoControlMaster {
+		t.Fatalf("ascii-box SSH target should disable ControlMaster")
 	}
 	if fake.createReq.TTL != 45*time.Minute {
 		t.Fatalf("create req=%#v", fake.createReq)
@@ -222,6 +252,7 @@ func hasFeature(features core.FeatureSet, want core.Feature) bool {
 func testConfig() Config {
 	return Config{
 		Provider: providerName,
+		SSHKey:   "/tmp/global-crabbox-key",
 		AsciiBox: AsciiBoxConfig{
 			APIKey:  "box_key",
 			BaseURL: "https://ascii.dev",
@@ -301,6 +332,10 @@ type fakeCommandRunner struct {
 	commands   []string
 	env        [][]string
 	configPath string
+	newStdout  string
+	newErr     error
+
+	infoResponses []string
 }
 
 func (r *fakeCommandRunner) Run(_ context.Context, req LocalCommandRequest) (LocalCommandResult, error) {
@@ -311,6 +346,9 @@ func (r *fakeCommandRunner) Run(_ context.Context, req LocalCommandRequest) (Loc
 	case strings.Contains(joined, " config"):
 		return LocalCommandResult{Stdout: fmt.Sprintf(`{"loggedIn":false,"path":%q}`, r.configPath)}, nil
 	case strings.Contains(joined, " new "):
+		if r.newStdout != "" || r.newErr != nil {
+			return LocalCommandResult{Stdout: r.newStdout}, r.newErr
+		}
 		return LocalCommandResult{Stdout: strings.Join([]string{
 			`{"event":"created","id":"bx_1","ttlSeconds":1800}`,
 			`{"event":"state","id":"bx_1","state":"provisioning"}`,
@@ -320,6 +358,13 @@ func (r *fakeCommandRunner) Run(_ context.Context, req LocalCommandRequest) (Loc
 		return LocalCommandResult{}, nil
 	case strings.Contains(joined, " info bx_1"):
 		return LocalCommandResult{Stdout: `{"box":{"id":"bx_1","state":"ready","ip":"203.0.113.10"}}`}, nil
+	case strings.Contains(joined, " info bx_2"):
+		if len(r.infoResponses) == 0 {
+			return LocalCommandResult{Stderr: "missing info response"}, fmt.Errorf("missing info response")
+		}
+		out := r.infoResponses[0]
+		r.infoResponses = r.infoResponses[1:]
+		return LocalCommandResult{Stdout: out}, nil
 	case strings.Contains(joined, " list"):
 		return LocalCommandResult{Stdout: `{"boxes":[{"id":"bx_1","state":"ready","ip":"203.0.113.10"}]}`}, nil
 	case strings.Contains(joined, " delete bx_1"):
@@ -332,6 +377,15 @@ func (r *fakeCommandRunner) Run(_ context.Context, req LocalCommandRequest) (Loc
 func hasEnv(env []string, want string) bool {
 	for _, value := range env {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCommand(commands []string, want string) bool {
+	for _, command := range commands {
+		if command == want {
 			return true
 		}
 	}
