@@ -195,6 +195,57 @@ func TestCreateContainerBuildsRunArgs(t *testing.T) {
 	if strings.Contains(args, "-p\n") {
 		t.Fatalf("apple-container should not publish host ports:\n%s", args)
 	}
+	if strings.Count(args, "--dns") != 1 {
+		t.Fatalf("custom DNS should not be duplicated:\n%s", args)
+	}
+}
+
+func TestCreateContainerAddsHostDNS(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]core.LocalCommandResult{}}
+	b := testBackend(runner)
+	cfg := b.configForRun()
+	runner.responses[commandKey([]string{"--dns"})] = core.LocalCommandResult{Stdout: "resolver #1\n  nameserver[0] : 10.0.0.2\n  nameserver[1] : 10.0.0.3\n"}
+	runner.responses[commandKey([]string{"run"})] = core.LocalCommandResult{Stdout: "crabbox-blue\n"}
+	if _, err := b.createContainer(context.Background(), cfg, "crabbox-blue", "cbx_123", "blue-lobster", "ssh-ed25519 AAAA test", true); err != nil {
+		t.Fatal(err)
+	}
+	args := recordedArgsForCommand(t, runner, "run")
+	if !strings.Contains(args, "--dns\n10.0.0.2") || !strings.Contains(args, "--dns\n10.0.0.3") {
+		t.Fatalf("host DNS missing:\n%s", args)
+	}
+}
+
+func TestAppleContainerHasDNSArg(t *testing.T) {
+	for name, args := range map[string][]string{
+		"split":    {"--dns", "1.1.1.1"},
+		"equals":   {"--dns=1.1.1.1"},
+		"dangling": {"--dns"},
+		"disabled": {"--no-dns"},
+	} {
+		if !appleContainerHasDNSArg(args) {
+			t.Fatalf("%s: expected DNS arg in %v", name, args)
+		}
+	}
+	if appleContainerHasDNSArg([]string{"--hostname", "example"}) {
+		t.Fatal("unexpected DNS arg")
+	}
+}
+
+func TestParseAppleContainerDNSServers(t *testing.T) {
+	text := `
+resolver #1
+  nameserver[0] : 10.0.0.2
+  nameserver[1] : 127.0.0.1
+  nameserver[2] : fe80::1%en0
+nameserver 10.0.0.3
+nameserver 2001:4860:4860::8888
+nameserver garbage
+`
+	got := uniqueAppleContainerDNSServers(parseAppleContainerDNSServers(text), 3)
+	want := []string{"10.0.0.2", "10.0.0.3", "2001:4860:4860::8888"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dns servers=%v want %v", got, want)
+	}
 }
 
 func TestCreateContainerNoSecretsAsCLIArgs(t *testing.T) {
@@ -207,7 +258,7 @@ func TestCreateContainerNoSecretsAsCLIArgs(t *testing.T) {
 	}
 	// The only key material passed is the public key (safe) via env. Ensure no
 	// private-looking material leaks into args.
-	args := strings.Join(runner.calls[0].Args, "\n")
+	args := recordedArgsForCommand(t, runner, "run")
 	if strings.Contains(strings.ToUpper(args), "PRIVATE") {
 		t.Fatalf("unexpected secret-like content in args:\n%s", args)
 	}
@@ -388,6 +439,25 @@ func TestWaitForNetworkAddressStopsOnExitedContainer(t *testing.T) {
 	}
 }
 
+func TestExitedDuringBootstrapErrorIncludesLogsAndDNSHint(t *testing.T) {
+	runner := &recordingRunner{
+		responses: map[string]core.LocalCommandResult{
+			commandKey([]string{"logs", "crabbox-exited"}): {Stdout: "Err: Temporary failure resolving 'archive.ubuntu.com'\n"},
+		},
+	}
+	b := testBackend(runner)
+	err := b.exitedDuringBootstrapError(context.Background(), "crabbox-exited", "stopped")
+	if err == nil {
+		t.Fatal("expected bootstrap error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"stopped during SSH bootstrap", "Temporary failure resolving", "--apple-container-extra-run-args '--dns <resolver>'"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 func TestRemoveContainerUsesDeleteForce(t *testing.T) {
 	runner := &recordingRunner{
 		responses: map[string]core.LocalCommandResult{
@@ -429,7 +499,7 @@ func TestDoctorReadyWhenSystemRunning(t *testing.T) {
 	runner := &recordingRunner{
 		responses: map[string]core.LocalCommandResult{
 			commandKey([]string{"system", "status"}):                {Stdout: "running\n"},
-			commandKey([]string{"run", "--help"}):                   {Stdout: "OPTIONS:\n  -u, --user <user>\n  --label <label>\n"},
+			commandKey([]string{"run", "--help"}):                   {Stdout: "OPTIONS:\n  -u, --user <user>\n  --label <label>\n  --dns <server>\n"},
 			commandKey([]string{"ls", "--all", "--format", "json"}): {Stdout: "[]"},
 		},
 	}
@@ -470,7 +540,18 @@ func TestDoctorRejectsIncompatibleRunCLI(t *testing.T) {
 			},
 		}
 		if _, err := testBackend(runner).Doctor(context.Background(), core.DoctorRequest{}); err == nil {
-			t.Fatal("doctor passed despite run lacking --user/--label")
+			t.Fatal("doctor passed despite run lacking --user/--label/--dns")
+		}
+	})
+	t.Run("run missing dns option", func(t *testing.T) {
+		runner := &recordingRunner{
+			responses: map[string]core.LocalCommandResult{
+				commandKey([]string{"system", "status"}): {Stdout: "running\n"},
+				commandKey([]string{"run", "--help"}):    {Stdout: "OPTIONS:\n  -u, --user <user>\n  --label <label>\n"},
+			},
+		}
+		if _, err := testBackend(runner).Doctor(context.Background(), core.DoctorRequest{}); err == nil {
+			t.Fatal("doctor passed despite run lacking --dns")
 		}
 	})
 }

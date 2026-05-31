@@ -157,8 +157,12 @@ variable consumed by the bootstrap script.
   startup time matters, or when the container has no network egress to install
   them.
 - If Apple's default container DNS setup does not inherit a working resolver,
-  pass an explicit nameserver through `--apple-container-extra-run-args '--dns 8.8.8.8'`
-  or configure the equivalent `appleContainer.extraRunArgs` value.
+  Crabbox passes detected host resolvers through `--dns` by default. Pass an
+  explicit resolver through `--apple-container-extra-run-args '--dns <resolver>'`
+  or configure the equivalent `appleContainer.extraRunArgs` value to override it.
+- If the bootstrap container exits before SSH is ready, Crabbox fails as soon as
+  the runtime reports the stopped state and includes a short `container logs`
+  tail instead of waiting for the full SSH timeout.
 
 ## Runtime expectations
 

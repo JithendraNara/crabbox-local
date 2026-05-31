@@ -27,6 +27,7 @@ type inspectConfiguration struct {
 	Image    inspectImage      `json:"image"`
 	Hostname string            `json:"hostname,omitempty"`
 	Labels   map[string]string `json:"labels,omitempty"`
+	DNS      inspectDNS        `json:"dns,omitempty"`
 }
 
 // inspectImage tolerates both an object ({"reference":"..."}) and a bare
@@ -64,6 +65,12 @@ type inspectNetwork struct {
 	IPv4Gateway string `json:"ipv4Gateway,omitempty"`
 	Hostname    string `json:"hostname,omitempty"`
 	Network     string `json:"network,omitempty"`
+}
+
+type inspectDNS struct {
+	Nameservers   []string `json:"nameservers,omitempty"`
+	SearchDomains []string `json:"searchDomains,omitempty"`
+	Options       []string `json:"options,omitempty"`
 }
 
 func decodeInspect(data []byte) ([]inspectContainer, error) {

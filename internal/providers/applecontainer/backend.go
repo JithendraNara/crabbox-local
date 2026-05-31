@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -215,8 +216,8 @@ func (b *backend) Doctor(ctx context.Context, _ core.DoctorRequest) (core.Doctor
 		return core.DoctorResult{}, exit(2, "%s system status failed (is the container CLI installed and started with `container system start`?): %s", providerName, commandDetail(statusResult, statusErr))
 	}
 	// The lease path shells out to `container run` with detached mode, `--user`,
-	// and `--label`. Probe that surface here so doctor fails fast on a CLI whose
-	// service/list API exists but whose `run` subcommand is absent or
+	// `--label`, and `--dns`. Probe that surface here so doctor fails fast on a
+	// CLI whose service/list API exists but whose `run` subcommand is absent or
 	// incompatible, instead of reporting ready and then failing on every
 	// warmup/run.
 	if err := b.checkRunSurface(ctx); err != nil {
@@ -391,6 +392,9 @@ func (b *backend) createContainer(ctx context.Context, cfg core.Config, name, le
 	}
 	for _, mount := range cacheVolumeMounts {
 		args = append(args, "--volume", mount)
+	}
+	if !appleContainerHasDNSArg(cfg.AppleContainer.ExtraRunArgs) {
+		args = append(args, b.appleContainerDNSArgs(ctx)...)
 	}
 	args = append(args, cfg.AppleContainer.ExtraRunArgs...)
 	args = append(args, cfg.AppleContainer.Image, "/bin/sh", "-lc", bootstrapScript)
@@ -628,13 +632,90 @@ func (b *backend) prepareLease(ctx context.Context, cfg core.Config, c inspectCo
 	target.Port = sshPort
 	target.ReadyCheck = readyCheck(cfg)
 	if wait {
-		if err := core.WaitForSSHReady(ctx, &target, b.rt.Stderr, "apple container ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+		if err := b.waitForSSHReady(ctx, c.id(), &target, core.BootstrapWaitTimeout(cfg)); err != nil {
 			return core.LeaseTarget{}, err
 		}
 		server.Status = "ready"
 		server.Labels["state"] = "ready"
 	}
 	return core.LeaseTarget{Server: server, SSH: target, LeaseID: leaseID}, nil
+}
+
+func (b *backend) waitForSSHReady(ctx context.Context, id string, target *core.SSHTarget, timeout time.Duration) error {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- core.WaitForSSHReady(waitCtx, target, b.rt.Stderr, "apple container ssh", timeout)
+	}()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+			c, err := b.inspectContainer(ctx, id)
+			if err != nil {
+				continue
+			}
+			if appleContainerTerminalStatus(c.status()) {
+				cancel()
+				return b.exitedDuringBootstrapError(ctx, id, c.status())
+			}
+		}
+	}
+}
+
+func (b *backend) exitedDuringBootstrapError(ctx context.Context, id, status string) error {
+	logs := b.containerLogTail(ctx, id, 6000)
+	hint := ""
+	if strings.Contains(logs, "Temporary failure resolving") || strings.Contains(logs, "Failed to fetch") {
+		hint = "; DNS failed during package bootstrap, retry with --apple-container-extra-run-args '--dns <resolver>' or configure appleContainer.extraRunArgs"
+	}
+	if strings.TrimSpace(logs) == "" {
+		return exit(5, "apple-container %s stopped during SSH bootstrap status=%s%s", id, blank(status, "unknown"), hint)
+	}
+	return exit(5, "apple-container %s stopped during SSH bootstrap status=%s%s\ncontainer logs:\n%s", id, blank(status, "unknown"), hint, logs)
+}
+
+func (b *backend) containerLogTail(ctx context.Context, id string, limit int) string {
+	result, err := b.container(ctx, []string{"logs", id}, nil, nil)
+	if err != nil {
+		return ""
+	}
+	logs := strings.TrimSpace(result.Stdout + result.Stderr)
+	if limit > 0 && len(logs) > limit {
+		logs = logs[len(logs)-limit:]
+		if idx := strings.IndexByte(logs, '\n'); idx >= 0 {
+			logs = logs[idx+1:]
+		}
+	}
+	return logs
+}
+
+func (b *backend) appleContainerDNSArgs(ctx context.Context) []string {
+	servers := b.hostDNSServers(ctx)
+	args := make([]string, 0, len(servers)*2)
+	for _, server := range servers {
+		args = append(args, "--dns", server)
+	}
+	return args
+}
+
+func (b *backend) hostDNSServers(ctx context.Context) []string {
+	servers := []string{}
+	if result, err := b.rt.Exec.Run(ctx, core.LocalCommandRequest{Name: "scutil", Args: []string{"--dns"}}); err == nil {
+		servers = append(servers, parseAppleContainerDNSServers(result.Stdout+result.Stderr)...)
+	}
+	if len(servers) == 0 {
+		if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+			servers = append(servers, parseAppleContainerDNSServers(string(data))...)
+		}
+	}
+	return uniqueAppleContainerDNSServers(servers, 3)
 }
 
 func (b *backend) serverFromContainer(c inspectContainer, cfg core.Config) core.Server {
@@ -670,7 +751,7 @@ func (b *backend) serverFromContainer(c inspectContainer, cfg core.Config) core.
 }
 
 // checkRunSurface verifies the `container run` subcommand exists and advertises
-// the options the lease path depends on (`--user`, `--label`). It uses
+// the options the lease path depends on (`--user`, `--label`, `--dns`). It uses
 // `run --help`, which has no side effects, so doctor can detect an incompatible
 // CLI before any lease is attempted.
 func (b *backend) checkRunSurface(ctx context.Context) error {
@@ -679,7 +760,7 @@ func (b *backend) checkRunSurface(ctx context.Context) error {
 		return exit(2, "%s `container run` subcommand unavailable (incompatible container CLI?): %s", providerName, commandDetail(result, err))
 	}
 	help := result.Stdout + result.Stderr
-	for _, opt := range []string{"--user", "--label"} {
+	for _, opt := range []string{"--user", "--label", "--dns"} {
 		if !strings.Contains(help, opt) {
 			return exit(2, "%s `container run` is missing the required %s option; upgrade Apple's container CLI", providerName, opt)
 		}
@@ -753,6 +834,65 @@ func commandDetail(result core.LocalCommandResult, err error) string {
 		return fmt.Sprintf("%v: %s", err, detail)
 	}
 	return fmt.Sprintf("%v", err)
+}
+
+func appleContainerHasDNSArg(args []string) bool {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "--dns" || arg == "--no-dns" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--dns=") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseAppleContainerDNSServers(text string) []string {
+	servers := []string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "nameserver") {
+			continue
+		}
+		if !strings.HasPrefix(line, "nameserver[") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			servers = append(servers, fields[1])
+			continue
+		}
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		servers = append(servers, strings.TrimSpace(line[idx+1:]))
+	}
+	return servers
+}
+
+func uniqueAppleContainerDNSServers(servers []string, limit int) []string {
+	seen := map[string]bool{}
+	unique := []string{}
+	for _, server := range servers {
+		server = strings.TrimSpace(server)
+		addr, err := netip.ParseAddr(server)
+		if err != nil || addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.Zone() != "" {
+			continue
+		}
+		server = addr.String()
+		if seen[server] {
+			continue
+		}
+		seen[server] = true
+		unique = append(unique, server)
+		if limit > 0 && len(unique) >= limit {
+			break
+		}
+	}
+	return unique
 }
 
 func firstNonBlank(values ...string) string {
