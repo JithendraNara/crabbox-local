@@ -132,6 +132,13 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		}
 		return core.LeaseTarget{}, err
 	}
+	c, err = b.waitForNetworkAddress(ctx, containerID, c, core.BootstrapWaitTimeout(cfg))
+	if err != nil {
+		if !req.Keep {
+			_ = b.removeContainer(context.Background(), containerID)
+		}
+		return core.LeaseTarget{}, err
+	}
 	lease, err := b.prepareLease(ctx, cfg, c, leaseID, slug, true)
 	if err != nil {
 		if !req.Keep {
@@ -505,6 +512,50 @@ func (b *backend) inspectContainer(ctx context.Context, id string) (inspectConta
 		return inspectContainer{}, exit(4, "container not found: %s", id)
 	}
 	return containers[0], nil
+}
+
+func (b *backend) waitForNetworkAddress(ctx context.Context, id string, c inspectContainer, timeout time.Duration) (inspectContainer, error) {
+	if c.ip() != "" {
+		return c, nil
+	}
+	if appleContainerTerminalStatus(c.status()) {
+		return inspectContainer{}, exit(5, "apple-container %s stopped before a network address was assigned", id)
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return inspectContainer{}, ctx.Err()
+		case <-deadline.C:
+			return inspectContainer{}, exit(5, "apple-container %s has no network address yet", id)
+		case <-tick.C:
+			next, err := b.inspectContainer(ctx, id)
+			if err != nil {
+				return inspectContainer{}, err
+			}
+			if next.ip() != "" {
+				return next, nil
+			}
+			if appleContainerTerminalStatus(next.status()) {
+				return inspectContainer{}, exit(5, "apple-container %s stopped before a network address was assigned", id)
+			}
+		}
+	}
+}
+
+func appleContainerTerminalStatus(status string) bool {
+	switch status {
+	case "stopped", "exited", "dead":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *backend) resolveContainer(ctx context.Context, identifier string) (inspectContainer, string, string, error) {

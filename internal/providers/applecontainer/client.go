@@ -8,8 +8,9 @@ import (
 
 // inspectContainer mirrors the JSON returned by `container inspect <id>` and
 // `container ls --format json`. Apple's runtime documents the network shape
-// (a `networks` array carrying `address` in CIDR form) and a `configuration`
-// object that holds the container id/image. The label location is not fully
+// (a `networks` array carrying an IPv4 address in CIDR form) and a
+// `configuration` object that holds the container id/image. The label location
+// is not fully
 // documented; we look for labels in the most CLI-consistent places
 // (`configuration.labels` and a top-level `labels`) and tolerate either.
 //
@@ -57,10 +58,12 @@ func (i *inspectImage) UnmarshalJSON(data []byte) error {
 }
 
 type inspectNetwork struct {
-	Address  string `json:"address"`
-	Gateway  string `json:"gateway,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Network  string `json:"network,omitempty"`
+	Address     string `json:"address"`
+	IPv4Address string `json:"ipv4Address,omitempty"`
+	Gateway     string `json:"gateway,omitempty"`
+	IPv4Gateway string `json:"ipv4Gateway,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	Network     string `json:"network,omitempty"`
 }
 
 func decodeInspect(data []byte) ([]inspectContainer, error) {
@@ -109,7 +112,7 @@ func (c inspectContainer) status() string {
 // ip returns the container's first network address without its CIDR suffix.
 func (c inspectContainer) ip() string {
 	for _, n := range c.Networks {
-		addr := strings.TrimSpace(n.Address)
+		addr := firstNonBlank(n.Address, n.IPv4Address)
 		if addr == "" {
 			continue
 		}

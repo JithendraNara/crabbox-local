@@ -61,6 +61,14 @@ crabbox ssh --provider apple --id apple-smoke
 crabbox stop --provider apple apple-smoke
 ```
 
+Cache-volume smoke:
+
+```sh
+crabbox run --provider apple-container \
+  --cache-volume pnpm-store=my-app-apple-container-pnpm:/var/cache/crabbox/pnpm \
+  -- pnpm test
+```
+
 ## Configuration
 
 ```yaml
@@ -121,7 +129,7 @@ variable consumed by the bootstrap script.
    local user cache directory and mounted into the container with
    `container run --volume <host-cache>:<path>`.
 5. Crabbox reads the container IP from `container inspect`
-   (`networks[0].address`, stripped of its CIDR suffix), waits for SSH
+   (`networks[0].address` or `networks[0].ipv4Address`, stripped of its CIDR suffix), waits for SSH
    readiness, syncs tracked and non-ignored files into `appleContainer.workRoot`,
    then drives the command over the normal SSH executor.
 6. `status`, `list`, and `stop` inspect or remove labeled containers via
@@ -148,6 +156,9 @@ variable consumed by the bootstrap script.
   packages on first start. Use a prebuilt image with SSH/Git/rsync packages when
   startup time matters, or when the container has no network egress to install
   them.
+- If Apple's default container DNS setup does not inherit a working resolver,
+  pass an explicit nameserver through `--apple-container-extra-run-args '--dns 8.8.8.8'`
+  or configure the equivalent `appleContainer.extraRunArgs` value.
 
 ## Runtime expectations
 
@@ -156,7 +167,7 @@ The backend relies on the documented Apple `container` CLI surface:
 - `container system start` / `container system status`;
 - `container run -d --name --label --env --cpus --memory --volume <image> <args>`;
 - `container ls --all --format json`;
-- `container inspect <id>` (network address from `networks[].address`);
+- `container inspect <id>` (network address from `networks[].address` or `networks[].ipv4Address`);
 - `container delete --force <id>`.
 
 A few details of the JSON shape (the exact label location and whether

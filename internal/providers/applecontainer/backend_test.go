@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	core "github.com/openclaw/crabbox/internal/cli"
 )
@@ -15,12 +16,18 @@ import (
 type recordingRunner struct {
 	calls     []core.LocalCommandRequest
 	responses map[string]core.LocalCommandResult
+	sequences map[string][]core.LocalCommandResult
 	errors    map[string]error
 }
 
 func (r *recordingRunner) Run(_ context.Context, req core.LocalCommandRequest) (core.LocalCommandResult, error) {
 	r.calls = append(r.calls, req)
 	key := commandKey(req.Args)
+	if seq := r.sequences[key]; len(seq) > 0 {
+		result := seq[0]
+		r.sequences[key] = seq[1:]
+		return result, nil
+	}
 	if err, ok := r.errors[key]; ok {
 		return r.responses[key], err
 	}
@@ -343,6 +350,44 @@ func TestPrepareLeaseRequiresNetworkAddress(t *testing.T) {
 	}
 }
 
+func TestWaitForNetworkAddressPollsInspect(t *testing.T) {
+	runner := &recordingRunner{
+		sequences: map[string][]core.LocalCommandResult{
+			commandKey([]string{"inspect", "crabbox-wait"}): {
+				{Stdout: `[{"status":"running","configuration":{"id":"crabbox-wait","labels":{"crabbox":"true","provider":"apple-container"}}}]`},
+				{Stdout: sampleInspectJSON("crabbox-wait", "wait", "cbx_wait")},
+			},
+		},
+	}
+	b := testBackend(runner)
+	start := inspectContainer{
+		Status:        "running",
+		Configuration: inspectConfiguration{ID: "crabbox-wait", Labels: map[string]string{"crabbox": "true", "provider": providerName}},
+	}
+	c, err := b.waitForNetworkAddress(context.Background(), "crabbox-wait", start, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ip(); got != "192.168.64.7" {
+		t.Fatalf("ip=%q want 192.168.64.7", got)
+	}
+	args := recordedArgsForCommand(t, runner, "inspect")
+	if !strings.Contains(args, "inspect\ncrabbox-wait") {
+		t.Fatalf("inspect args=%q", args)
+	}
+}
+
+func TestWaitForNetworkAddressStopsOnExitedContainer(t *testing.T) {
+	b := testBackend(&recordingRunner{responses: map[string]core.LocalCommandResult{}})
+	start := inspectContainer{
+		Status:        "stopped",
+		Configuration: inspectConfiguration{ID: "crabbox-exited", Labels: map[string]string{"crabbox": "true", "provider": providerName}},
+	}
+	if _, err := b.waitForNetworkAddress(context.Background(), "crabbox-exited", start, time.Minute); err == nil || !strings.Contains(err.Error(), "stopped before a network address") {
+		t.Fatalf("error=%v, want stopped before network address", err)
+	}
+}
+
 func TestRemoveContainerUsesDeleteForce(t *testing.T) {
 	runner := &recordingRunner{
 		responses: map[string]core.LocalCommandResult{
@@ -470,6 +515,10 @@ func TestInspectIPStripsCIDR(t *testing.T) {
 	bare := inspectContainer{Networks: []inspectNetwork{{Address: "10.0.0.5"}}}
 	if got := bare.ip(); got != "10.0.0.5" {
 		t.Fatalf("ip=%q want 10.0.0.5", got)
+	}
+	current := inspectContainer{Networks: []inspectNetwork{{IPv4Address: "192.168.64.4/24"}}}
+	if got := current.ip(); got != "192.168.64.4" {
+		t.Fatalf("ip=%q want 192.168.64.4", got)
 	}
 }
 

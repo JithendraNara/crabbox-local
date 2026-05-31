@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added `provider: apple-container` for local Apple silicon macOS Linux leases, including SSH sync/run lifecycle and provider-backed cache volumes. Thanks @zozo123.
+
 ### Fixed
 
 ### Removed
