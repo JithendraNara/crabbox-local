@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Scoped the README Release badge to `?event=push` so it reflects tag-push release runs instead of cancelled `workflow_dispatch` runs. Fixes https://github.com/openclaw/crabbox/issues/189.
+- Scoped the README Release badge to `?event=push` so it reflects tag-push release runs instead of cancelled `workflow_dispatch` runs. Fixes https://github.com/openclaw/crabbox/issues/189. Thanks @zozo123.
 
 ## 0.23.0 - 2026-05-30
 
